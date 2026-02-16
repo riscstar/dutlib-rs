@@ -1,0 +1,11 @@
+[package]
+name = "rb3gen2-test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.58", features = ["derive"] }
+env_logger = "0.11.9"
+expectrl = "0.8.0"
+log = "0.4.29"
+serde_json = "1.0.149"
