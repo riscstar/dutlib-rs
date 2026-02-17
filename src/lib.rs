@@ -1,18 +1,50 @@
 use expectrl::{
     Error, Expect, Session,
+    process::NonBlocking,
     repl::ReplSession,
     session::{OsProcess, OsSession, OsStream},
     stream::log::LogStream,
 };
-use std::{io::Stdout, process::Command};
+use std::{
+    io::{Read, Stdout},
+    process::Command,
+};
 
 pub mod cmd;
 
-pub trait ReplSessionExt {
-    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error>;
+pub trait SessionExt {
+    /// Read all available data and convert to a string.
+    ///
+    /// This is largely useful for debugging timeouts. The concept comes from
+    /// https://github.com/zhiburt/expectrl/issues/75#issuecomment-2638198930
+    fn try_read_to_string(&mut self) -> Option<String>;
 }
 
-impl<S: Expect> ReplSessionExt for ReplSession<S> {
+impl<P, S: Read + NonBlocking> SessionExt for Session<P, S> {
+    fn try_read_to_string(&mut self) -> Option<String> {
+        let mut buf = [0; 1024];
+        let mut data = Vec::new();
+        match self.try_read(&mut buf) {
+            Ok(n) if n > 0 => data.extend(&buf[..n]),
+            _ => {}
+        }
+
+        if data.len() > 0 {
+            Some(String::from_utf8_lossy(&data).to_string())
+        } else {
+            return None;
+        }
+    }
+}
+
+pub trait ReplSessionExt {
+    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error>;
+
+    /// Read all available data and convert to a string.
+    fn try_read_to_string(&mut self) -> Option<String>;
+}
+
+impl<S: Expect + SessionExt> ReplSessionExt for ReplSession<S> {
     fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
         log::info!(">>> {}", cmd.as_ref());
         let reply = self.execute(cmd);
@@ -36,8 +68,15 @@ impl<S: Expect> ReplSessionExt for ReplSession<S> {
                 }
             }
 
+            log::trace!("{raw:?}");
+            log::trace!("{s:?}");
+
             s
         })
+    }
+
+    fn try_read_to_string(&mut self) -> Option<String> {
+        self.get_session_mut().try_read_to_string()
     }
 }
 
@@ -83,6 +122,7 @@ impl Rb3Gen2 {
 
         if let Err(err) = uart.expect("Terminal ready") {
             log::error!("Terminal emulator did not report ready (port busy?)");
+            log::debug!("{:?}", uart.try_read_to_string());
             return Err(err);
         }
         uart.send_line("")?;
@@ -90,7 +130,8 @@ impl Rb3Gen2 {
         match uart.expect("sync check") {
             Ok(_) => {}
             Err(Error::ExpectTimeout) => {
-                log::warn!("Timed out during synchonization check");
+                log::warn!("Timed out during synchronization check - rebooting");
+                log::debug!("{:?}", uart.try_read_to_string());
                 self.state = MachineState::Crashed;
                 return self.console();
             }
