@@ -64,6 +64,7 @@ fn smoke_test(args: SmokeTestCli) -> Result<(), Error> {
     let mut board = Rb3Gen2::new();
     let mut console = board.console_with_module(&args.module)?;
     cmd::wait_for_ipv4(&mut console, &args.name)?;
+    cmd::uname(&mut console)?;
 
     let mut failures = 0;
 
@@ -110,6 +111,7 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
     for cycle in 0..args.cycles {
         board.reboot(console)?;
         console = board.console_with_module(&args.module)?;
+        let _ = cmd::uname(&mut console);
         if cmd::wait_for_ipv4(&mut console, &args.name)
             .map_err(|err| {
                 log::error!("{err}");

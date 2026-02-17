@@ -21,6 +21,13 @@ pub fn wait_for_ipv4(shell: &mut ReplSession<OsSession>, adapter: &str) -> Resul
     Err(io::Error::other("Timed out waiting for IP address").into())
 }
 
+/// Capture basic kernel version management data
+pub fn uname(shell: &mut ReplSession<OsSession>) -> Result<String, Error> {
+    let reply = shell.cmd(&format!("uname -a"))?;
+    log::info!("uname: {reply}");
+    Ok(reply)
+}
+
 /// Ping an IP address and check that we get a suitable reply
 pub fn ping(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
     let reply = shell.cmd(&format!("ping -c 4 {ipaddr}"))?;
