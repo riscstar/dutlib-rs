@@ -24,9 +24,14 @@ impl<S: Expect> ReplSessionExt for ReplSession<S> {
                 //       we need to get rid of escape sequences. Currently we
                 //       just blindly remove characters at the beginning and end
                 //       to make the logs look good.
+                let mut first_line = true;
                 for ln in String::from_utf8_lossy(&raw[11..raw.len() - 10]).split("\r\n") {
                     log::debug!("  < {}", ln);
-                    s.push('\n');
+                    if first_line {
+                        first_line = false;
+                    } else {
+                        s.push('\n');
+                    }
                     s.push_str(ln);
                 }
             }
