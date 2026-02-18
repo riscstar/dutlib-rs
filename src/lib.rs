@@ -8,6 +8,8 @@ use expectrl::{
 use std::{
     io::{Read, Stdout},
     process::Command,
+    thread,
+    time::Duration,
 };
 
 pub mod cmd;
@@ -102,38 +104,71 @@ impl Rb3Gen2 {
 
     pub fn console(&mut self) -> Result<ReplSession<OsSession>, Error> {
         log::info!("Connecting to console ({:?})", self.state);
-        match self.state {
-            MachineState::Booted => {}
-            MachineState::Rebooting => {
-                // wait to the prompt to appear
-                std::thread::sleep(std::time::Duration::from_secs(40));
-                self.state = MachineState::Booted;
-            }
-            MachineState::Crashed => {
-                let mut cmd = Command::new("iot-power-cycle");
-                cmd.arg("rb3gen2-usbc");
-                let _ = cmd.output()?;
-            }
+        if self.state == MachineState::Crashed {
+            let mut cmd = Command::new("iot-power-cycle");
+            cmd.arg("rb3gen2-usbc");
+            let output = cmd.output()?;
+            log::debug!("After power-cycle: {output:?}");
         }
 
         let mut cmd = Command::new("ssh");
         cmd.args("-t walnut picocom -b 115200 /dev/serial/by-id/usb-Prolific_Technology_Inc._Prolific_PL2303GD_USB_Serial_COM_Port_DAAOb119D16-if00".split_whitespace());
         let mut uart = Session::spawn(cmd)?;
 
+        // We need a relatively long timeout here because the power-cycle does
+        // really odd things to the Raspberry Pi 3 WiFi and we need time for
+        // it to stabilize again!
+        uart.set_expect_timeout(Some(Duration::from_secs(30)));
+
         if let Err(err) = uart.expect("Terminal ready") {
-            log::error!("Terminal emulator did not report ready (port busy?)");
-            log::debug!("{:?}", uart.try_read_to_string());
-            return Err(err);
+            let remaining = uart.try_read_to_string();
+            if remaining
+                .as_deref()
+                .unwrap_or("")
+                .contains("Resource temporarily unavailable")
+            {
+                log::error!("Terminal emulator cannot start (port busy?)");
+                log::debug!("{:?}", remaining);
+                return Err(err);
+            }
+
+            // If we don't get a clear indication the port is not available
+            // then maybe the target board is DoSing it's own controller board.
+            // Let's force it to reboot to make sure it stops!
+            log::warn!("Cannot connect to target - rebooting");
+            log::debug!("{:?}", remaining);
+            return if self.state == MachineState::Crashed {
+                Err(err)
+            } else {
+                self.state = MachineState::Crashed;
+                self.console()
+            };
         }
+
+        // Restore the default timeout
+        uart.set_expect_timeout(Some(Duration::from_secs(10)));
+
+        if self.state != MachineState::Booted {
+            log::debug!("Waiting for getty to start");
+            thread::sleep(Duration::from_secs(40));
+        }
+
+        // Probe to see if a shell is present
         uart.send_line("")?;
         uart.send_line("echo sync ch''eck")?;
         match uart.expect("sync check") {
-            Ok(_) => {}
+            Ok(_) => {
+                self.state = MachineState::Booted;
+            }
             Err(Error::ExpectTimeout) => {
                 log::warn!("Timed out during synchronization check - rebooting");
                 log::debug!("{:?}", uart.try_read_to_string());
-                self.state = MachineState::Crashed;
-                return self.console();
+                return if self.state == MachineState::Crashed {
+                    Err(Error::ExpectTimeout)
+                } else {
+                    self.state = MachineState::Crashed;
+                    self.console()
+                };
             }
             Err(err) => {
                 return Err(err);
