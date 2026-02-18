@@ -1,7 +1,7 @@
 use std::{io, process};
 
 use clap::{Parser, Subcommand};
-use expectrl::Error;
+use expectrl::{Error, repl::ReplSession, session::OsSession};
 use log::error;
 
 use rb3gen2_test::{Rb3Gen2, ReplSessionExt, cmd};
@@ -60,24 +60,31 @@ pub struct SmokeTestCli {
     ipaddr: String,
 }
 
-fn smoke_test(args: SmokeTestCli) -> Result<(), Error> {
-    let mut board = Rb3Gen2::new();
-    let mut console = board.console_with_module(&args.module)?;
-    cmd::wait_for_ipv4(&mut console, &args.name)?;
-    cmd::uname(&mut console)?;
+fn run_smoke_test(
+    console: &mut ReplSession<OsSession>,
+    name: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    cmd::wait_for_ipv4(console, name)?;
 
     let mut failures = 0;
 
-    failures += cmd::ping(&mut console, &args.ipaddr)?;
-    failures += cmd::iperf3_bidir(&mut console, &args.ipaddr)?;
-    failures += cmd::iperf3_tx(&mut console, &args.ipaddr)?;
-    failures += cmd::iperf3_rx(&mut console, &args.ipaddr)?;
+    failures += cmd::ping(console, ipaddr)?;
+    failures += cmd::iperf3_bidir(console, ipaddr)?;
+    failures += cmd::iperf3_tx(console, ipaddr)?;
+    failures += cmd::iperf3_rx(console, ipaddr)?;
 
-    // Determine verdict
-    if failures == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("{failures} failures reported")).into())
+    Ok(failures)
+}
+fn smoke_test(args: SmokeTestCli) -> Result<(), Error> {
+    let mut board = Rb3Gen2::new();
+    let mut console = board.console_with_module(&args.module)?;
+    cmd::uname(&mut console)?;
+
+    match run_smoke_test(&mut console, &args.name, &args.ipaddr) {
+        Ok(0) => Ok(()),
+        Ok(n) => Err(io::Error::other(format!("{n} failures reported")).into()),
+        Err(e) => Err(e),
     }
 }
 
@@ -109,24 +116,24 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
     let mut console = board.console()?;
 
     for cycle in 0..args.cycles {
-        board.reboot(console)?;
+        let _ = board.reboot(console);
         console = board.console_with_module(&args.module)?;
-        let _ = cmd::uname(&mut console);
-        if cmd::wait_for_ipv4(&mut console, &args.name)
-            .map_err(|err| {
+        let _ = cmd::uname(&mut console).inspect_err(|e| log::error!("{e}"));
+
+        match run_smoke_test(&mut console, &args.name, &args.ipaddr) {
+            Ok(0) => good += 1,
+            Ok(n) => {
+                bad += 1;
+                log::error!("{n} tested failed");
+            }
+            Err(err) => {
+                bad += 1;
                 log::error!("{err}");
-                err
-            })
-            .is_err()
-            || cmd::ping(&mut console, &args.ipaddr)? != 0
-        {
-            bad += 1;
-        } else {
-            good += 1;
-        }
+            }
+        };
 
         log::info!(
-            "Boot success is {}% after {} iterations",
+            "Boot success is {:4.1}% after {} iterations",
             (100 * good) as f64 / (good + bad) as f64,
             cycle + 1
         );
