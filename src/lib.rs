@@ -167,9 +167,7 @@ impl Rb3Gen2 {
             && lsmod.contains("tc956x")
             && !lsmod.contains(module_name)
         {
-            shell.cmd("reboot")?;
-            self.state = MachineState::Rebooting;
-            std::mem::drop(shell);
+            self.reboot(shell)?;
             return self.console_with_module(module_name);
         }
 
@@ -177,8 +175,19 @@ impl Rb3Gen2 {
         Ok(shell)
     }
 
+    /// Send a reboot command to the target device.
+    ///
+    /// The `reboot` is a fire-and-forget command (rather than waiting for the
+    /// prompt) because sometimes the close down messages interfere with the
+    /// display of the prompt.
+    ///
+    /// The function takes ownership of `shell`, causing it to be dropped at
+    /// function exit. This ensures the console is closed and ready for
+    /// reconnection.
     pub fn reboot(&mut self, mut shell: ReplSession<OsSession>) -> Result<(), Error> {
-        shell.cmd("reboot")?;
+        // reboot is fire-and-forget because sometimes the closedown
+        // messages interfere with the prompt
+        shell.send_line("reboot")?;
         self.state = MachineState::Rebooting;
         Ok(())
     }
