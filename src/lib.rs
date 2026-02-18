@@ -106,20 +106,17 @@ impl Rb3Gen2 {
         log::info!("Connecting to console ({:?})", self.state);
         if self.state == MachineState::Crashed {
             let mut cmd = Command::new("iot-power-cycle");
-            cmd.arg("rb3gen2-usbc");
+            cmd.arg("rb3gen2");
             let output = cmd.output()?;
-            log::debug!("After power-cycle: {output:?}");
+            log::debug!("Power-cycle: {output:?}");
         }
 
         let mut cmd = Command::new("ssh");
         cmd.args("-t walnut picocom -b 115200 /dev/serial/by-id/usb-Prolific_Technology_Inc._Prolific_PL2303GD_USB_Serial_COM_Port_DAAOb119D16-if00".split_whitespace());
         let mut uart = Session::spawn(cmd)?;
 
-        // We need a relatively long timeout here because the power-cycle does
-        // really odd things to the Raspberry Pi 3 WiFi and we need time for
-        // it to stabilize again!
-        uart.set_expect_timeout(Some(Duration::from_secs(30)));
-
+        // Error handling will try to reboot the target if possible but also
+        // implements direct exit for permanent failures.
         if let Err(err) = uart.expect("Terminal ready") {
             let remaining = uart.try_read_to_string();
             if remaining
@@ -127,30 +124,28 @@ impl Rb3Gen2 {
                 .unwrap_or("")
                 .contains("Resource temporarily unavailable")
             {
-                log::error!("Terminal emulator cannot start (port busy?)");
                 log::debug!("{:?}", remaining);
+                log::error!("Terminal emulator cannot start (port busy?)");
                 return Err(err);
             }
 
-            // If we don't get a clear indication the port is not available
-            // then maybe the target board is DoSing it's own controller board.
-            // Let's force it to reboot to make sure it stops!
-            log::warn!("Cannot connect to target - rebooting");
             log::debug!("{:?}", remaining);
-            return if self.state == MachineState::Crashed {
-                Err(err)
-            } else {
-                self.state = MachineState::Crashed;
-                self.console()
-            };
+            log::warn!("Cannot connect to target");
+            return Err(err);
         }
 
-        // Restore the default timeout
-        uart.set_expect_timeout(Some(Duration::from_secs(10)));
-
-        if self.state != MachineState::Booted {
-            log::debug!("Waiting for getty to start");
-            thread::sleep(Duration::from_secs(40));
+        match self.state {
+            MachineState::Booted => {
+                // nothing to do
+            }
+            MachineState::Rebooting => {
+                log::debug!("Waiting for getty to start");
+                thread::sleep(Duration::from_secs(40));
+            }
+            MachineState::Crashed => {
+                // we already waited for the getty to start are part of the
+                // iot-power-cycle command
+            }
         }
 
         // Probe to see if a shell is present
@@ -161,16 +156,17 @@ impl Rb3Gen2 {
                 self.state = MachineState::Booted;
             }
             Err(Error::ExpectTimeout) => {
-                log::warn!("Timed out during synchronization check - rebooting");
                 log::debug!("{:?}", uart.try_read_to_string());
+                log::warn!("Timed out during synchronization check");
                 return if self.state == MachineState::Crashed {
                     Err(Error::ExpectTimeout)
                 } else {
-                    self.state = MachineState::Crashed;
+                    self.crashed(uart);
                     self.console()
                 };
             }
             Err(err) => {
+                log::debug!("{:?}", uart.try_read_to_string());
                 return Err(err);
             }
         }
@@ -212,18 +208,25 @@ impl Rb3Gen2 {
 
     /// Send a reboot command to the target device.
     ///
-    /// The `reboot` is a fire-and-forget command (rather than waiting for the
-    /// prompt) because sometimes the close down messages interfere with the
-    /// display of the prompt.
-    ///
-    /// The function takes ownership of `shell`, causing it to be dropped at
-    /// function exit. This ensures the console is closed and ready for
-    /// reconnection.
+    /// This function deliberately drops `shell` to force a clean shutdown.
     pub fn reboot(&mut self, mut shell: ReplSession<OsSession>) -> Result<(), Error> {
-        // reboot is fire-and-forget because sometimes the closedown
-        // messages interfere with the prompt
+        // The `reboot` is a fire-and-forget command (rather than waiting for the
+        // prompt) because sometimes the close down messages interfere with the
+        // display of the prompt.
         shell.send_line("reboot")?;
+
+        // update the board state
         self.state = MachineState::Rebooting;
+
         Ok(())
+    }
+
+    /// Record that a machine has crashed.
+    ///
+    /// Marking the board as crashed changes how we connect to it in the future.
+    ///
+    /// This function deliberately drops `_session` to force a clean shutdown.
+    pub fn crashed(&mut self, mut _session: OsSession) {
+        self.state = MachineState::Crashed;
     }
 }
