@@ -16,8 +16,6 @@ pub fn wait_for_ipv4(shell: &mut ReplSession<OsSession>, adapter: &str) -> Resul
         thread::sleep(Duration::from_secs(5));
     }
 
-    println!("Timed out waiting for IP address, rebooting target");
-    shell.cmd("reboot")?;
     Err(io::Error::other("Timed out waiting for IP address").into())
 }
 
