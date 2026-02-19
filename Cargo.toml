@@ -1,5 +1,5 @@
 [package]
-name = "rb3gen2-test"
+name = "dutlib"
 version = "0.1.0"
 edition = "2024"
 
