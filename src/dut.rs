@@ -29,7 +29,6 @@ impl<P, S: Read + NonBlocking> SessionExt for Session<P, S> {
             _ => {}
         }
 
-        log::info!("{:?}", data);
         if data.len() > 0 {
             Some(String::from_utf8_lossy(&data).to_string())
         } else {

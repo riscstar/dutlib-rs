@@ -1,10 +1,13 @@
 use std::{io, process};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use expectrl::{Error, repl::ReplSession, session::OsSession};
 use log::error;
 
-use dutlib::{dut::DeviceUnderTest, dut::ReplSessionExt, tests};
+use dutlib::{
+    dut::{DeviceUnderTest, ReplSessionExt},
+    plans, tests,
+};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -13,13 +16,13 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Only report warnings and errors
-    #[arg(short, long)]
-    quiet: bool,
+    /// Reduce the verbosity
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    quiet: u8,
 
     /// Increase verbosity
-    #[arg(short, long)]
-    verbose: bool,
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 #[derive(Debug, Subcommand)]
@@ -35,6 +38,9 @@ enum Commands {
 
     /// Functional testing (inc. data integrity)
     FunctionalTest(TestCli),
+
+    /// Latency testing (using ping)
+    LatencyTest(TestCli),
 
     /// Run all tests that do not require the board to be rebooted.
     AllTests(TestCli),
@@ -66,21 +72,31 @@ pub struct TestCli {
     ipaddr: String,
 }
 
-fn smoke_test(
-    console: &mut ReplSession<OsSession>,
-    name: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    tests::wait_for_ipv4(console, name)?;
+#[derive(Clone, Debug, ValueEnum)]
+pub enum TestPlan {
+    SmokeTest,
+    FunctionalTest,
+    LatencyTest,
+}
 
-    let mut failures = 0;
+type TestPlanRunner = fn(&mut ReplSession<OsSession>, &str, &str) -> Result<u32, Error>;
 
-    failures += tests::ping(console, ipaddr)?;
-    failures += tests::iperf3_bidir(console, ipaddr)?;
-    failures += tests::iperf3_tx(console, ipaddr)?;
-    failures += tests::iperf3_rx(console, ipaddr)?;
+impl TestPlan {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::SmokeTest => "Smoke tests",
+            Self::FunctionalTest => "Functional tests",
+            Self::LatencyTest => "Latency tests",
+        }
+    }
 
-    Ok(failures)
+    fn runner(&self) -> TestPlanRunner {
+        match self {
+            Self::SmokeTest => plans::smoke_test,
+            Self::FunctionalTest => plans::functional_test,
+            Self::LatencyTest => plans::latency_test,
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -100,6 +116,14 @@ pub struct BootCycleCli {
     /// Number of boot cycles to perform
     #[arg(short, long, default_value_t = 100)]
     cycles: u32,
+
+    /// Set the number of times to run the test plan per boot
+    #[arg(long, default_value_t = 1)]
+    cycles_per_boot: u32,
+
+    /// Choose which test plan to cycle through
+    #[arg(short, long, default_value = "smoke-test")]
+    plan: TestPlan,
 }
 
 fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
@@ -108,14 +132,20 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
     let mut good = 0;
     let mut bad = 0;
 
+    let mut remaining_this_boot = 0;
     let mut console = board.console()?;
 
     for cycle in 0..args.cycles {
-        let _ = board.reboot(console);
-        console = board.console_with_module(&args.module)?;
-        let _ = tests::uname(&mut console).inspect_err(|e| log::error!("{e}"));
+        if remaining_this_boot <= 1 {
+            let _ = board.reboot(console);
+            console = board.console_with_module(&args.module)?;
+            let _ = tests::uname(&mut console).inspect_err(|e| log::error!("{e}"));
+            remaining_this_boot = args.cycles_per_boot;
+        } else {
+            remaining_this_boot -= 1;
+        }
 
-        match smoke_test(&mut console, &args.name, &args.ipaddr) {
+        match args.plan.runner()(&mut console, &args.name, &args.ipaddr) {
             Ok(0) => good += 1,
             Ok(n) => {
                 bad += 1;
@@ -124,6 +154,7 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
             Err(err) => {
                 bad += 1;
                 log::error!("{err}");
+                log::info!("{:?}", console.try_read_to_string());
             }
         };
 
@@ -137,23 +168,7 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn functional_test(
-    console: &mut ReplSession<OsSession>,
-    name: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    tests::wait_for_ipv4(console, name)?;
-
-    let mut failures = 0;
-
-    failures += tests::scp_bidir(console, ipaddr)?;
-    failures += tests::scp_tx(console, ipaddr)?;
-    failures += tests::scp_rx(console, ipaddr)?;
-
-    Ok(failures)
-}
-
-fn run_test<T>(args: TestCli, test: T) -> Result<(), Error>
+fn run_test<T>(args: TestCli, test_plan: T) -> Result<(), Error>
 where
     T: FnOnce(&mut ReplSession<OsSession>, &str, &str) -> Result<u32, Error>,
 {
@@ -161,7 +176,7 @@ where
     let mut console = board.console_with_module(&args.module)?;
     tests::uname(&mut console)?;
 
-    match test(&mut console, &args.name, &args.ipaddr) {
+    match test_plan(&mut console, &args.name, &args.ipaddr) {
         Ok(0) => Ok(()),
         Ok(n) => Err(io::Error::other(format!("{n} failures reported")).into()),
         Err(e) => {
@@ -173,8 +188,11 @@ where
 }
 
 fn all_tests(args: TestCli) -> Result<(), Error> {
-    let plans = [smoke_test, functional_test];
-    let names = ["Smoke tests", "Functional tests"];
+    let tests = [
+        TestPlan::SmokeTest,
+        TestPlan::FunctionalTest,
+        TestPlan::LatencyTest,
+    ];
 
     let mut board = DeviceUnderTest::new();
     let mut console = board.console_with_module(&args.module)?;
@@ -182,7 +200,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
 
     let mut failures = 0;
 
-    for (plan, name) in plans.iter().zip(names) {
+    for (plan, name) in tests.iter().map(|p| (p.runner(), p.name())) {
         let result = plan(&mut console, &args.name, &args.ipaddr);
         match result {
             Ok(0) => {
@@ -193,8 +211,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
                 failures += n;
             }
             Err(err) => {
-                log::error!("{name} failed to complete due to an internal error");
-                log::info!("{err}");
+                log::error!("{name} failed to complete due to an internal error ({err})");
                 log::info!("{:?}", console.try_read_to_string());
                 failures += 1;
 
@@ -217,21 +234,28 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
 fn app() -> Result<(), Error> {
     let cli = Cli::parse();
 
-    let default_level = if cli.verbose {
-        "debug"
-    } else if cli.quiet {
-        "info,dutlib::dut=warn"
-    } else {
-        "info"
-    };
-    let env = env_logger::Env::default().default_filter_or(default_level);
+    let levels = [
+        "error",
+        "warn",
+        "info,dutlib::dut=warn",
+        "info", // default
+        "debug",
+        "trace",
+    ];
+    const DEFAULT_LEVEL: i16 = 3;
+    let env = env_logger::Env::default().default_filter_or(
+        levels[(DEFAULT_LEVEL + cli.verbose as i16 - cli.quiet as i16)
+            .max(0)
+            .min(5) as usize],
+    );
     env_logger::Builder::from_env(env).init();
 
     match cli.command {
         Commands::Reboot(args) => reboot(args),
-        Commands::SmokeTest(args) => run_test(args, smoke_test),
+        Commands::SmokeTest(args) => run_test(args, plans::smoke_test),
         Commands::BootCycle(args) => boot_cycle(args),
-        Commands::FunctionalTest(args) => run_test(args, functional_test),
+        Commands::FunctionalTest(args) => run_test(args, plans::functional_test),
+        Commands::LatencyTest(args) => run_test(args, plans::latency_test),
         Commands::AllTests(args) => all_tests(args),
     }
 }

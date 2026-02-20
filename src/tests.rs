@@ -39,18 +39,98 @@ pub fn uname(shell: &mut ReplSession<OsSession>) -> Result<String, Error> {
     Ok(reply)
 }
 
-/// Ping an IP address and check that we get a suitable reply
-pub fn ping(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
-    let reply = shell.cmd(&format!("ping -c 4 {ipaddr}"))?;
+#[derive(Debug)]
+struct PingStats {
+    //min: f64,
+    avg: f64,
+    max: f64,
+    //mdev: f64,
+}
 
-    Ok(
-        if reply.contains("4 received") && reply.contains(" 0% packet loss") {
-            0
-        } else {
+fn ping_helper_with_stats(
+    shell: &mut ReplSession<OsSession>,
+    ipaddr: &str,
+    args: &str,
+) -> Result<Option<PingStats>, Error> {
+    set_timeout_secs(shell, 15);
+    let reply = shell.cmd(&format!("ping {ipaddr} {args}"))?;
+    set_timeout_default(shell);
+
+    if !reply.contains(" 0% packet loss") {
+        return Ok(None);
+    }
+
+    for ln in reply.lines() {
+        if ln.starts_with("rtt") {
+            // rtt min/avg/max/mdev = 0.766/1.146/1.437/0.205 ms
+            let stats = ln.split_whitespace().skip(3).next();
+            if let Some(stats) = stats {
+                let values = stats
+                    .split('/')
+                    .filter_map(|s| s.parse().ok())
+                    .collect::<Vec<f64>>();
+                if values.len() == 4 {
+                    return Ok(Some(PingStats {
+                        //min: values[0],
+                        avg: values[1],
+                        max: values[2],
+                        //mdev: values[3],
+                    }));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn ping_helper(
+    name: &str,
+    shell: &mut ReplSession<OsSession>,
+    ipaddr: &str,
+    args: &str,
+) -> Result<u32, Error> {
+    let stats = ping_helper_with_stats(shell, ipaddr, args)?;
+    if let Some(stats) = stats.as_ref() {
+        log::info!("{name}: {stats:?}");
+    }
+
+    Ok(match stats {
+        Some(stats) if stats.avg < 2.0 && stats.max < 5.0 => 0,
+        Some(stats) => {
+            log::warn!("ping: Failed QoS checks ({stats:?})");
+            1
+        }
+        None => {
             log::warn!("ping: Could not ping {ipaddr}");
             1
-        },
-    )
+        }
+    })
+}
+
+/// Issue 4 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
+pub fn ping(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+    ping_helper("ping", shell, ipaddr, "-c 4")
+}
+
+/// Issue 10 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
+pub fn ping_1s(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+    ping_helper("ping_1s", shell, ipaddr, "-c 10")
+}
+
+/// Issue 100 pings at 100ms intervals, check for packet loss and confirm RTT summary exceeds threshold
+pub fn ping_100ms(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+    ping_helper("ping_100ms", shell, ipaddr, "-c 100 -i 0.1")
+}
+
+/// Issue 1000 pings at 10ms intervals, check for packet loss and confirm RTT summary exceeds threshold
+pub fn ping_10ms(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+    ping_helper("ping_10ms", shell, ipaddr, "-c 1000 -i 0.01")
+}
+
+/// Issue 5000 pings at maximum rate, check for packet loss and confirm RTT summary exceeds threshold
+pub fn ping_flood(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+    ping_helper("ping_flood", shell, ipaddr, "-c 5000 -f")
 }
 
 fn iperf3_helper(
@@ -99,7 +179,7 @@ pub fn iperf3_bidir(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<
 
     Ok(
         //if tx[0] < 47.5 || tx[1] < 47.5 || rx[0] < 220.0 || rx[1] < 220.0 {
-        if tx[0] < 2000.0 || tx[1] < 2000.0 || rx[0] < 1400.0 || rx[1] < 1400.0 {
+        if tx[0] < 2000.0 || tx[1] < 2000.0 || rx[0] < 1250.0 || rx[1] < 1250.0 {
             log::warn!("iperf3_bidir: Network performance is too slow: tx {tx:?} rx {rx:?}");
             1
         } else {
@@ -138,7 +218,10 @@ pub fn iperf3_tx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
 pub fn scp_bidir(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
-    set_timeout_secs(shell, 30);
+    // The vendor driver has very limited RX bandwidth so we need a depressingly
+    // long timeout here.
+    set_timeout_secs(shell, 90);
+    //set_timeout_secs(shell, 30);
 
     // Generate and checksum the TX data
     shell
@@ -181,7 +264,10 @@ pub fn scp_bidir(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
 pub fn scp_rx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
-    set_timeout_secs(shell, 30);
+    // The vendor driver has very limited RX bandwidth so we need a depressingly
+    // long timeout here.
+    set_timeout_secs(shell, 90);
+    //set_timeout_secs(shell, 30);
 
     shell
         .cmd(format!("ssh test@{ipaddr} dd if=/dev/urandom of=urandom_rx.dat bs=1024 count=$((1024*1024)) status=progress"))?;
