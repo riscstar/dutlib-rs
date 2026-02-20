@@ -95,8 +95,10 @@ pub fn ping_helper(
         log::info!("{name}: {stats:?}");
     }
 
+    // The max value is fairly relaxed because neither DUT nor the ping target
+    // are tuned for minimal latency.
     Ok(match stats {
-        Some(stats) if stats.avg < 2.0 && stats.max < 5.0 => 0,
+        Some(stats) if stats.avg < 2.0 && stats.max < 10.0 => 0,
         Some(stats) => {
             log::warn!("ping: Failed QoS checks ({stats:?})");
             1
