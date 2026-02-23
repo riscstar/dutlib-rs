@@ -1,6 +1,7 @@
 words = [
     "dut",
     "dutlib",
+    "ethtool",
     "mdev",
     "replsession",
     "urandom",

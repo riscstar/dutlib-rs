@@ -17,12 +17,40 @@ fn set_timeout_default(shell: &mut ReplSession<OsSession>) {
         .set_expect_timeout(Some(Duration::from_secs(10)));
 }
 
+/// Show what drivers have bound to the adapter
+pub fn driver_info(shell: &mut ReplSession<OsSession>, adapter: &str) -> Result<(), Error> {
+    let mut eth_driver = "unknown";
+    let mut bus_info = "unknown";
+
+    // Use ethtool to check for driver information
+    let reply = shell.cmd(&format!("ethtool --driver {adapter}"))?;
+    for ln in reply.lines() {
+        if ln.starts_with("driver: ") {
+            eth_driver = &ln[8..];
+        }
+        if ln.starts_with("bus-info: ") {
+            bus_info = &ln[10..];
+        }
+    }
+
+    // Check the bus driver uses using sysfs
+    let reply = shell.cmd(&format!("find /sys/bus/*/drivers/ -name \"{bus_info}\""))?;
+    let bus_driver = match reply.lines().next() {
+        Some(first_line) => first_line.split('/').skip(5).next().unwrap_or("unknown"),
+        None => "unknown",
+    };
+
+    log::info!("driver_info: {bus_info} is bound to {eth_driver}/{bus_driver}");
+    Ok(())
+}
+
 /// Wait for the specified IP address to be assigned to the board
 pub fn wait_for_ipv4(shell: &mut ReplSession<OsSession>, adapter: &str) -> Result<(), Error> {
     for _ in 0..6 {
         let reply = shell.cmd(&format!("ip -4 addr show {adapter}"))?;
 
         if reply.contains("inet") {
+            driver_info(shell, adapter)?;
             return Ok(());
         }
 
