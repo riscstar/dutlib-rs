@@ -179,6 +179,9 @@ impl DeviceUnderTest {
             }
         }
 
+        // Make sure we are in the user's home directory
+        uart.send_line("cd")?;
+
         // Kernel messages can make the REPL management unreliable (since they
         // can interfere with the prompt). Let's turn them off.
         uart.send_line("echo 1 > /proc/sys/kernel/printk")?;
@@ -187,7 +190,7 @@ impl DeviceUnderTest {
         // characters
         uart.send_line("TERM=vt102; export TERM")?;
 
-        // Let's set our own prompt (one without any escape codes in it)
+        // Let's set our own prompt
         uart.send_line("PS1=\"REPLSESSION# \"")?;
 
         uart.send_line("echo resync ch''eck")?;
