@@ -237,12 +237,13 @@ fn app() -> Result<(), Error> {
     let levels = [
         "error",
         "warn",
+        "info,dutlib=warn",
         "info,dutlib::dut=warn",
         "info", // default
         "debug",
         "trace",
     ];
-    const DEFAULT_LEVEL: i16 = 3;
+    const DEFAULT_LEVEL: i16 = 4;
     let env = env_logger::Env::default().default_filter_or(
         levels[(DEFAULT_LEVEL + cli.verbose as i16 - cli.quiet as i16)
             .max(0)
