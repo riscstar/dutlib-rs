@@ -1,24 +1,11 @@
 use std::{io, thread, time::Duration};
 
-use expectrl::{Error, repl::ReplSession, session::OsSession};
+use expectrl::Error;
 
-use crate::dut::ReplSessionExt;
-
-/// Convenience function to set the a timeout
-fn set_timeout_secs(shell: &mut ReplSession<OsSession>, duration: u64) {
-    shell
-        .get_session_mut()
-        .set_expect_timeout(Some(Duration::from_secs(duration)));
-}
-
-fn set_timeout_default(shell: &mut ReplSession<OsSession>) {
-    shell
-        .get_session_mut()
-        .set_expect_timeout(Some(Duration::from_secs(10)));
-}
+use crate::CommandExecutor;
 
 /// Show what drivers have bound to the adapter
-pub fn driver_info(shell: &mut ReplSession<OsSession>, adapter: &str) -> Result<(), Error> {
+pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
     let mut eth_driver = "unknown";
     let mut bus_info = "unknown";
 
@@ -26,10 +13,10 @@ pub fn driver_info(shell: &mut ReplSession<OsSession>, adapter: &str) -> Result<
     let reply = shell.cmd(&format!("ethtool --driver {adapter}"))?;
     for ln in reply.lines() {
         if ln.starts_with("driver: ") {
-            eth_driver = &ln[8..];
+            eth_driver = &ln["driver: ".len()..];
         }
         if ln.starts_with("bus-info: ") {
-            bus_info = &ln[10..];
+            bus_info = &ln["bus-info: ".len()..];
         }
     }
 
@@ -45,7 +32,7 @@ pub fn driver_info(shell: &mut ReplSession<OsSession>, adapter: &str) -> Result<
 }
 
 /// Wait for the specified IP address to be assigned to the board
-pub fn wait_for_ipv4(shell: &mut ReplSession<OsSession>, adapter: &str) -> Result<(), Error> {
+pub fn wait_for_ipv4(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
     for _ in 0..6 {
         let reply = shell.cmd(&format!("ip -4 addr show {adapter}"))?;
 
@@ -61,7 +48,7 @@ pub fn wait_for_ipv4(shell: &mut ReplSession<OsSession>, adapter: &str) -> Resul
 }
 
 /// Capture basic kernel version management data
-pub fn uname(shell: &mut ReplSession<OsSession>) -> Result<String, Error> {
+pub fn uname(shell: &mut impl CommandExecutor) -> Result<String, Error> {
     let reply = shell.cmd(&format!("uname -a"))?;
     log::info!("uname: {reply}");
     Ok(reply)
@@ -76,13 +63,11 @@ struct PingStats {
 }
 
 fn ping_helper_with_stats(
-    shell: &mut ReplSession<OsSession>,
+    shell: &mut impl CommandExecutor,
     ipaddr: &str,
     args: &str,
 ) -> Result<Option<PingStats>, Error> {
-    set_timeout_secs(shell, 15);
-    let reply = shell.cmd(&format!("ping {ipaddr} {args}"))?;
-    set_timeout_default(shell);
+    let reply = shell.with_timeout_secs(15, |sh| sh.cmd(&format!("ping {ipaddr} {args}")))?;
 
     if !reply.contains(" 0% packet loss") {
         return Ok(None);
@@ -114,7 +99,7 @@ fn ping_helper_with_stats(
 
 pub fn ping_helper(
     name: &str,
-    shell: &mut ReplSession<OsSession>,
+    shell: &mut impl CommandExecutor,
     ipaddr: &str,
     args: &str,
 ) -> Result<u32, Error> {
@@ -139,32 +124,32 @@ pub fn ping_helper(
 }
 
 /// Issue 4 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn ping(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     ping_helper("ping", shell, ipaddr, "-c 4")
 }
 
 /// Issue 10 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_1s(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn ping_1s(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     ping_helper("ping_1s", shell, ipaddr, "-c 10")
 }
 
 /// Issue 100 pings at 100ms intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_100ms(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn ping_100ms(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     ping_helper("ping_100ms", shell, ipaddr, "-c 100 -i 0.1")
 }
 
 /// Issue 1000 pings at 10ms intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_10ms(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn ping_10ms(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     ping_helper("ping_10ms", shell, ipaddr, "-c 1000 -i 0.01")
 }
 
 /// Issue 5000 pings at maximum rate, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_flood(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn ping_flood(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     ping_helper("ping_flood", shell, ipaddr, "-c 5000 -f")
 }
 
 fn iperf3_helper(
-    shell: &mut ReplSession<OsSession>,
+    shell: &mut impl CommandExecutor,
     ipaddr: &str,
     args: &str,
 ) -> Result<([f64; 2], [f64; 2]), Error> {
@@ -203,7 +188,7 @@ fn iperf3_helper(
     ))
 }
 
-pub fn iperf3_bidir(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn iperf3_bidir(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     let (tx, rx) = iperf3_helper(shell, ipaddr, "--bidir")?;
     log::info!("iperf3_bidir: TX is {tx:?}, RX is {rx:?}");
 
@@ -218,7 +203,7 @@ pub fn iperf3_bidir(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<
     )
 }
 
-pub fn iperf3_rx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn iperf3_rx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     let bench = iperf3_helper(shell, ipaddr, "-R")?.0;
     log::info!("iperf3_rx: RX is {bench:?}");
 
@@ -230,7 +215,7 @@ pub fn iperf3_rx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32
     })
 }
 
-pub fn iperf3_tx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn iperf3_tx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     let bench = iperf3_helper(shell, ipaddr, "")?.0;
     log::info!("iperf3_tx: TX performance is {bench:?}");
 
@@ -247,45 +232,50 @@ pub fn iperf3_tx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_bidir(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn scp_bidir(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     // The vendor driver has very limited RX bandwidth so we need a depressingly
     // long timeout here.
-    set_timeout_secs(shell, 90);
-    //set_timeout_secs(shell, 30);
+    //shell.with_timeout_secs(30, |sh| {
+    shell.with_timeout_secs(90, |sh| {
+        // Generate and checksum the TX data
+        sh.cmd(
+            "dd if=/dev/urandom of=urandom_tx.dat bs=1024 count=$((1024*1024)) status=progress",
+        )?;
+        let my_sha256sum_tx = sh.cmd("sha256sum urandom_tx.dat")?;
 
-    // Generate and checksum the TX data
-    shell
-        .cmd("dd if=/dev/urandom of=urandom_tx.dat bs=1024 count=$((1024*1024)) status=progress")?;
-    let my_sha256sum_tx = shell.cmd("sha256sum urandom_tx.dat")?;
-
-    // Generate and checksum the RX data
-    shell
+        // Generate and checksum the RX data
+        sh
         .cmd(format!("ssh test@{ipaddr} dd if=/dev/urandom of=urandom_rx.dat bs=1024 count=$((1024*1024)) status=progress"))?;
-    let their_sha256sum_rx = shell.cmd(format!("ssh test@{ipaddr} sha256sum urandom_rx.dat"))?;
+        let their_sha256sum_rx =
+            sh.cmd(format!("ssh test@{ipaddr} sha256sum urandom_rx.dat"))?;
 
-    // Run the transfer
-    shell.cmd(format!(
-        "scp urandom_tx.dat test@{ipaddr}: & scp test@{ipaddr}:urandom_rx.dat . "
-    ))?;
-    shell.cmd("fg")?;
+        // Run the transfer
+        sh.cmd(format!(
+            "scp urandom_tx.dat test@{ipaddr}: & scp test@{ipaddr}:urandom_rx.dat . "
+        ))?;
+        sh.cmd("fg")?;
 
-    // Collect the remaining checksums
-    let my_sha256sum_rx = shell.cmd("sha256sum urandom_rx.dat")?;
-    let their_sha256sum_tx = shell.cmd(format!("ssh test@{ipaddr} sha256sum urandom_tx.dat"))?;
+        // Collect the remaining checksums
+        let my_sha256sum_rx = sh.cmd("sha256sum urandom_rx.dat")?;
+        let their_sha256sum_tx =
+            sh.cmd(format!("ssh test@{ipaddr} sha256sum urandom_tx.dat"))?;
 
-    set_timeout_default(shell);
+        let mut failures = 0;
+        if my_sha256sum_tx != their_sha256sum_tx {
+            log::warn!(
+                "scp_bidir: TX checksum mismatch: {my_sha256sum_tx} vs {their_sha256sum_tx}"
+            );
+            failures += 1;
+        }
+        if my_sha256sum_rx != their_sha256sum_rx {
+            log::warn!(
+                "scp_bidir: RX checksum mismatch: {my_sha256sum_rx} vs {their_sha256sum_rx}"
+            );
+            failures += 1;
+        }
 
-    let mut failures = 0;
-    if my_sha256sum_tx != their_sha256sum_tx {
-        log::warn!("scp_bidir: TX checksum mismatch: {my_sha256sum_tx} vs {their_sha256sum_tx}");
-        failures += 1;
-    }
-    if my_sha256sum_rx != their_sha256sum_rx {
-        log::warn!("scp_bidir: RX checksum mismatch: {my_sha256sum_rx} vs {their_sha256sum_rx}");
-        failures += 1;
-    }
-
-    Ok(failures)
+        Ok(failures)
+    })
 }
 
 /// Transfer 1GiB of random data from partner to DUT and verify sha256sum
@@ -293,25 +283,23 @@ pub fn scp_bidir(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_rx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
+pub fn scp_rx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
     // The vendor driver has very limited RX bandwidth so we need a depressingly
     // long timeout here.
-    set_timeout_secs(shell, 90);
-    //set_timeout_secs(shell, 30);
-
-    shell
+    //shell.with_timeout_secs(30, |sh| {
+    shell.with_timeout_secs(90, |sh| {
+        sh
         .cmd(format!("ssh test@{ipaddr} dd if=/dev/urandom of=urandom_rx.dat bs=1024 count=$((1024*1024)) status=progress"))?;
-    let their_sha256sum = shell.cmd(format!("ssh test@{ipaddr} sha256sum urandom_rx.dat"))?;
-    shell.cmd(format!("scp test@{ipaddr}:urandom_rx.dat ."))?;
-    let my_sha256sum = shell.cmd("sha256sum urandom_rx.dat")?;
+        let their_sha256sum = sh.cmd(format!("ssh test@{ipaddr} sha256sum urandom_rx.dat"))?;
+            sh.cmd(format!("scp test@{ipaddr}:urandom_rx.dat ."))?;
+        let my_sha256sum = sh.cmd("sha256sum urandom_rx.dat")?;
 
-    set_timeout_default(shell);
-
-    Ok(if my_sha256sum != their_sha256sum {
-        log::warn!("scp_rx: Checksum mismatch: {my_sha256sum} vs {their_sha256sum}");
-        1
-    } else {
-        0
+        Ok(if my_sha256sum != their_sha256sum {
+            log::warn!("scp_rx: Checksum mismatch: {my_sha256sum} vs {their_sha256sum}");
+            1
+        } else {
+            0
+        })
     })
 }
 
@@ -320,21 +308,20 @@ pub fn scp_rx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, E
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_tx(shell: &mut ReplSession<OsSession>, ipaddr: &str) -> Result<u32, Error> {
-    set_timeout_secs(shell, 30);
+pub fn scp_tx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+    shell.with_timeout_secs(30, |sh| {
+        sh.cmd(
+            "dd if=/dev/urandom of=urandom_tx.dat bs=1024 count=$((1024*1024)) status=progress",
+        )?;
+        let my_sha256sum = sh.cmd("sha256sum urandom_tx.dat")?;
+        sh.cmd(format!("scp urandom_tx.dat test@{ipaddr}:"))?;
+        let their_sha256sum = sh.cmd(format!("ssh test@{ipaddr} sha256sum urandom_tx.dat"))?;
 
-    shell
-        .cmd("dd if=/dev/urandom of=urandom_tx.dat bs=1024 count=$((1024*1024)) status=progress")?;
-    let my_sha256sum = shell.cmd("sha256sum urandom_tx.dat")?;
-    shell.cmd(format!("scp urandom_tx.dat test@{ipaddr}:"))?;
-    let their_sha256sum = shell.cmd(format!("ssh test@{ipaddr} sha256sum urandom_tx.dat"))?;
-
-    set_timeout_default(shell);
-
-    Ok(if my_sha256sum != their_sha256sum {
-        log::warn!("scp_tx: Checksum mismatch: {my_sha256sum} vs {their_sha256sum}");
-        1
-    } else {
-        0
+        Ok(if my_sha256sum != their_sha256sum {
+            log::warn!("scp_tx: Checksum mismatch: {my_sha256sum} vs {their_sha256sum}");
+            1
+        } else {
+            0
+        })
     })
 }

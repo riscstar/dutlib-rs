@@ -1,9 +1,9 @@
-use expectrl::{Error, repl::ReplSession, session::OsSession};
+use expectrl::Error;
 
-use crate::tests;
+use crate::{CommandExecutor, tests};
 
 pub fn smoke_test(
-    console: &mut ReplSession<OsSession>,
+    console: &mut impl CommandExecutor,
     name: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
@@ -20,7 +20,7 @@ pub fn smoke_test(
 }
 
 pub fn functional_test(
-    console: &mut ReplSession<OsSession>,
+    console: &mut impl CommandExecutor,
     name: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
@@ -36,7 +36,7 @@ pub fn functional_test(
 }
 
 pub fn latency_test(
-    console: &mut ReplSession<OsSession>,
+    console: &mut impl CommandExecutor,
     name: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {

@@ -1,60 +1,14 @@
 use expectrl::{
     Error, Expect, Session,
-    process::NonBlocking,
     repl::ReplSession,
     session::{OsProcess, OsSession, OsStream},
     stream::log::LogStream,
 };
-use std::{
-    io::{Read, Stdout},
-    process::Command,
-    thread,
-    time::Duration,
-};
+use std::{io::Stdout, process::Command, thread, time::Duration};
 
-pub trait SessionExt {
-    /// Read all available data and convert to a string.
-    ///
-    /// This is largely useful for debugging timeouts. The concept comes from
-    /// https://github.com/zhiburt/expectrl/issues/75#issuecomment-2638198930
-    fn try_read_to_string(&mut self) -> Option<String>;
-}
+use crate::{CommandExecutor, SessionExt};
 
-impl<P, S: Read + NonBlocking> SessionExt for Session<P, S> {
-    fn try_read_to_string(&mut self) -> Option<String> {
-        let mut buf = [0; 1024];
-        let mut data = Vec::new();
-        match self.try_read(&mut buf) {
-            Ok(n) if n > 0 => data.extend(&buf[..n]),
-            _ => {}
-        }
-
-        if data.len() > 0 {
-            Some(String::from_utf8_lossy(&data).to_string())
-        } else {
-            return None;
-        }
-    }
-}
-
-pub trait ReplSessionExt {
-    /// Convenience method to run a comment.
-    ///
-    /// This method is similar to `execute()` but has some additional
-    /// conveniences.
-    ///
-    /// 1. Output can be automatically logged (if log level is set
-    ///    appropriately).
-    /// 2. Output is cleaned up to remove some escape sequences and to replace
-    ///    \r\n with plain \n
-    /// 3. Output if returned as a `String`
-    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error>;
-
-    /// Read all available data and convert to a string.
-    fn try_read_to_string(&mut self) -> Option<String>;
-}
-
-impl<S: Expect + SessionExt> ReplSessionExt for ReplSession<S> {
+impl CommandExecutor for ReplSession<OsSession> {
     fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
         log::info!(">>> {}", cmd.as_ref());
         let reply = self.execute(cmd);
@@ -78,7 +32,6 @@ impl<S: Expect + SessionExt> ReplSessionExt for ReplSession<S> {
                 }
             }
 
-            log::trace!("{raw:?}");
             log::trace!("{s:?}");
 
             s
@@ -87,6 +40,22 @@ impl<S: Expect + SessionExt> ReplSessionExt for ReplSession<S> {
 
     fn try_read_to_string(&mut self) -> Option<String> {
         self.get_session_mut().try_read_to_string()
+    }
+
+    /// Convenience function to set the a timeout
+    fn with_timeout_secs<F, R>(&mut self, duration: u64, work: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.get_session_mut()
+            .set_expect_timeout(Some(Duration::from_secs(duration)));
+
+        let result = work(self);
+
+        self.get_session_mut()
+            .set_expect_timeout(Some(Duration::from_secs(10)));
+
+        result
     }
 }
 
