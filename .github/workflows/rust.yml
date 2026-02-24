@@ -1,0 +1,28 @@
+name: Build and upload
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest-arm
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --verbose --release
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v6
+      with:
+          name: dutlib-${{ github.sha }}
+          path: |
+            target/release/rb3gen2-remote
+            target/release/rb3gen2-test
