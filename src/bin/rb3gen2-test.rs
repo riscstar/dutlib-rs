@@ -1,6 +1,6 @@
 use std::{
     io::{self, ErrorKind},
-    process,
+    process::{self, Command},
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -28,6 +28,9 @@ struct Cli {
 enum Commands {
     /// Run a simple smoke test
     SmokeTest(TestCli),
+
+    /// Cycling test to estimate test reliability
+    Cycle(CycleCli),
 
     /// Functional testing (inc. data integrity)
     FunctionalTest(TestCli),
@@ -79,6 +82,70 @@ impl TestPlan {
             Self::LatencyTest => plans::latency_test,
         }
     }
+}
+
+#[derive(Debug, Parser)]
+pub struct CycleCli {
+    /// Name of the network driver module to be loaded
+    #[arg(short, long, default_value = "dwmac_tc956x")]
+    module: String,
+
+    /// Name of the device (as it appears in `ip addr`)
+    #[arg(short, long, default_value = "enP1p5s0f1")]
+    name: String,
+
+    /// IP address (or name) of a machine running `iperf3 -s`
+    #[arg(short, long, default_value = "192.168.10.2")]
+    ipaddr: String,
+
+    /// Number of test cycles to perform
+    #[arg(short, long, default_value_t = 100)]
+    cycles: u32,
+
+    /// Halt on first error
+    #[arg(short, long)]
+    halt: bool,
+
+    /// Choose which test plan to cycle through
+    #[arg(short, long, default_value = "smoke-test")]
+    plan: TestPlan,
+}
+
+fn cycle(args: CycleCli) -> Result<(), Error> {
+    let mut good = 0;
+    let mut bad = 0;
+
+    let mut shell = NativeExecutor::new();
+    tests::uname(&mut shell)?;
+    shell.load_module(&args.module)?;
+
+    for cycle in 0..args.cycles {
+        match args.plan.runner()(&mut shell, &args.name, &args.ipaddr)? {
+            0 => good += 1,
+            n if args.halt => {
+                return Err(io::Error::other(format!(
+                    "FAILED after {good} iterations ({n} tests failed"
+                ))
+                .into());
+            }
+            n => {
+                bad += 1;
+                log::error!("{n} tests failed");
+            }
+        };
+
+        if !args.halt {
+            log::info!(
+                "Success rate is {:4.1}% after {} iterations",
+                (100 * good) as f64 / (good + bad) as f64,
+                cycle + 1
+            );
+        } else {
+            log::info!("Successfully completed {good} iterations");
+        }
+    }
+
+    Ok(())
 }
 
 fn run_test<T>(args: TestCli, test_plan: T) -> Result<(), Error>
@@ -154,12 +221,38 @@ fn app() -> Result<(), Error> {
     );
     env_logger::Builder::from_env(env).init();
 
-    match cli.command {
+    let printk = if cli.quiet > 0 {
+        let settings = Command::new("sh")
+            .arg("-c")
+            .arg("cat /proc/sys/kernel/printk")
+            .output()
+            .ok();
+        Command::new("sh")
+            .arg("-c")
+            .arg("echo 1 > /proc/sys/kernel/printk")
+            .output()?;
+        settings
+    } else {
+        None
+    };
+
+    let result = match cli.command {
         Commands::SmokeTest(args) => run_test(args, plans::smoke_test),
+        Commands::Cycle(args) => cycle(args),
         Commands::FunctionalTest(args) => run_test(args, plans::functional_test),
         Commands::LatencyTest(args) => run_test(args, plans::latency_test),
         Commands::AllTests(args) => all_tests(args),
+    };
+
+    if let Some(settings) = printk {
+        let original = String::from_utf8_lossy(&settings.stdout);
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(format!("echo '{original}' > /proc/sys/kernel/printk"))
+            .spawn();
     }
+
+    result
 }
 
 fn main() {
