@@ -20,13 +20,11 @@ jobs:
     - name: Install cross
       run: cargo install cross --git https://github.com/cross-rs/cross --rev 19bc73f2775a0683a991910a21c6368aaaa858f8
     - name: Build
-      run: cross build --target aarch64-unknown-linux-gnu --verbose --release
-    - name: Debug
-      run: find target/
+      run: cross build --target aarch64-unknown-linux-gnu --release
     - name: Upload artifacts
       uses: actions/upload-artifact@v6
       with:
           name: dutlib-${{ github.sha }}
           path: |
-            target/release/rb3gen2-remote
-            target/release/rb3gen2-test
+            target/aarch64-unknown-linux-gnu/release/rb3gen2-remote
+            target/aarch64-unknown-linux-gnu/release/rb3gen2-test
