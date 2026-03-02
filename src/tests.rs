@@ -1,8 +1,8 @@
-use std::{io, thread, time::Duration};
+use std::{io, process::Command, thread, time::Duration};
 
 use expectrl::Error;
 
-use crate::CommandExecutor;
+use crate::{CommandExecutor, plans};
 
 /// Show what drivers have bound to the adapter
 pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
@@ -29,6 +29,49 @@ pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<()
 
     log::info!("driver_info: {bus_info} is bound to {eth_driver}/{bus_driver}");
     Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct AdapterInfo {
+    pub speed: Option<u32>,
+}
+
+/// Gather information about the adapter
+pub fn adapter_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<AdapterInfo, Error> {
+    let reply = shell.cmd(&format!("ethtool --json {adapter}"))?;
+    let json = serde_json::from_str::<serde_json::Value>(&reply).map_err(|e| {
+        log::error!("{e}");
+        io::Error::other("Cannot parse JSON from ethtool")
+    })?;
+
+    let speed = json[0]["speed"].as_i64().map(|s| s as u32);
+
+    Ok(AdapterInfo { speed })
+}
+
+/// Get the adapter speed (or 2500.0 is the speed cannot be read for any reason)
+pub fn adapter_speed(shell: &mut impl CommandExecutor, adapter: &str) -> f64 {
+    match adapter_info(shell, adapter) {
+        Ok(AdapterInfo { speed: Some(speed) }) => speed as f64,
+        _ => 2500.0,
+    }
+}
+
+/// Wait for the adapter to detect a link and report the link speed
+pub fn wait_for_adapter_info(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+) -> Result<Option<AdapterInfo>, Error> {
+    for _ in 0..6 {
+        let info = adapter_info(shell, adapter)?;
+        if info.speed.is_some() {
+            return Ok(Some(info));
+        }
+
+        thread::sleep(Duration::from_secs(5));
+    }
+
+    Ok(None)
 }
 
 /// Wait for the specified IP address to be assigned to the board
@@ -324,4 +367,113 @@ pub fn scp_tx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Err
             0
         })
     })
+}
+
+/// Run a ethtool command on the link partner.
+///
+/// This can be used to restrict the advertised link modes.
+pub fn link_partner_ethtool(args: &str) -> Result<(), Error> {
+    let output = Command::new("sudo")
+        .arg("ethtool")
+        .args(
+            args.replace("{adapter}", "enxccbabda84b23")
+                .split_whitespace(),
+        )
+        .output()?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("ethtool failed: {output:?}")).into())
+    }
+}
+
+/// Run smoke tests at the default (maximum) link speed.
+pub fn link_partner_advertise_all(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    // advertise everything
+    link_partner_ethtool("-s {adapter} advertise 0xffffffffffffffff")?;
+    thread::sleep(Duration::from_secs(2));
+    let adapter_info = wait_for_adapter_info(shell, adapter)?;
+
+    if let Some(AdapterInfo { speed: Some(speed) }) = adapter_info {
+        log::info!("Link negotiated at {speed}mbit");
+    } else {
+        log::error!("Unexpected adapter info: {adapter_info:?}");
+        failures += 1;
+    }
+
+    failures += plans::smoke_test(shell, adapter, ipaddr)?;
+
+    Ok(failures)
+}
+
+/// Provoke the link partner to advertise 1000baseT/Full and verify correct
+/// negotiation.
+pub fn link_partner_advertise_1000baset_full(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    // get the initial adapter info
+    let Some(initial_info) = wait_for_adapter_info(shell, adapter)? else {
+        log::error!("Failed to read adapter info");
+        return Ok(1);
+    };
+
+    // change the link partner's advertisement and give time for the link to stop
+    link_partner_ethtool("-s {adapter} advertise 0x020")?;
+    thread::sleep(Duration::from_secs(2));
+
+    // wait for the new adapter info
+    let test_info_result = wait_for_adapter_info(shell, adapter);
+    let smoke_test_result = plans::smoke_test(shell, adapter, ipaddr);
+
+    // restore the link partner's advertisement and make sure we get the adapter back
+    link_partner_ethtool("-s {adapter} advertise 0xffffffffffffffff")?;
+    thread::sleep(Duration::from_secs(2));
+    let restored_info = wait_for_adapter_info(shell, adapter)?;
+
+    // Make sure "something" works after restoring the defaults
+    failures += ping(shell, ipaddr)?;
+
+    // deferred error handling (to ensure the advertisement was restored)
+    let test_info = test_info_result?;
+    failures += smoke_test_result?;
+
+    // check the link achieved the expect speed
+    match test_info {
+        Some(AdapterInfo { speed: Some(1000) }) => {}
+        Some(AdapterInfo { speed: Some(speed) }) => {
+            log::error!("Bad link speed {speed}");
+            failures += 1;
+        }
+        info => {
+            log::error!("Unexpected adapter info: {info:?}");
+            failures += 1;
+        }
+    }
+
+    // check the link restored OK
+    match restored_info {
+        None => {
+            log::error!("Link did not restore correctly (no link)");
+            failures += 1;
+        }
+        Some(restored_info) => {
+            if initial_info != restored_info {
+                log::error!("Bad restored link info: {initial_info:?} versus {restored_info:?}");
+                failures += 1;
+            }
+        }
+    }
+
+    Ok(failures)
 }

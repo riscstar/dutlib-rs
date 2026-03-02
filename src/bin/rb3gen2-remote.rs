@@ -41,6 +41,9 @@ enum Commands {
     /// Latency testing (using ping)
     LatencyTest(TestCli),
 
+    /// PHY Auto-Negotiation testing
+    PhyAnTest(TestCli),
+
     /// Run all tests that do not require the board to be rebooted.
     AllTests(TestCli),
 }
@@ -76,6 +79,7 @@ pub enum TestPlan {
     SmokeTest,
     FunctionalTest,
     LatencyTest,
+    PhyAnTest,
 }
 
 type TestPlanRunner = fn(&mut ReplSession<OsSession>, &str, &str) -> Result<u32, Error>;
@@ -86,6 +90,7 @@ impl TestPlan {
             Self::SmokeTest => "Smoke tests",
             Self::FunctionalTest => "Functional tests",
             Self::LatencyTest => "Latency tests",
+            Self::PhyAnTest => "PHY auto-negotiation tests",
         }
     }
 
@@ -94,6 +99,7 @@ impl TestPlan {
             Self::SmokeTest => plans::smoke_test,
             Self::FunctionalTest => plans::functional_test,
             Self::LatencyTest => plans::latency_test,
+            Self::PhyAnTest => plans::phy_an_test,
         }
     }
 }
@@ -167,17 +173,18 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test<T>(args: TestCli, test_plan: T) -> Result<(), Error>
-where
-    T: FnOnce(&mut ReplSession<OsSession>, &str, &str) -> Result<u32, Error>,
-{
+fn run_test(args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
     let mut board = DeviceUnderTest::new();
     let mut console = board.console_with_module(&args.module)?;
     tests::uname(&mut console)?;
 
-    match test_plan(&mut console, &args.name, &args.ipaddr) {
-        Ok(0) => Ok(()),
-        Ok(n) => Err(io::Error::other(format!("{n} failures reported")).into()),
+    let name = test_plan.name();
+    match test_plan.runner()(&mut console, &args.name, &args.ipaddr) {
+        Ok(0) => {
+            log::info!("{name} completed successfully");
+            Ok(())
+        }
+        Ok(n) => Err(io::Error::other(format!("{name} reported {n} failures")).into()),
         Err(e) => {
             log::error!("Test plan failed to complete due to internal error");
             log::info!("{:?}", console.try_read_to_string());
@@ -191,6 +198,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
         TestPlan::SmokeTest,
         TestPlan::FunctionalTest,
         TestPlan::LatencyTest,
+        TestPlan::PhyAnTest,
     ];
 
     let mut board = DeviceUnderTest::new();
@@ -252,10 +260,11 @@ fn app() -> Result<(), Error> {
 
     match cli.command {
         Commands::Reboot(args) => reboot(args),
-        Commands::SmokeTest(args) => run_test(args, plans::smoke_test),
+        Commands::SmokeTest(args) => run_test(args, TestPlan::SmokeTest),
         Commands::BootCycle(args) => boot_cycle(args),
-        Commands::FunctionalTest(args) => run_test(args, plans::functional_test),
-        Commands::LatencyTest(args) => run_test(args, plans::latency_test),
+        Commands::FunctionalTest(args) => run_test(args, TestPlan::FunctionalTest),
+        Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
+        Commands::PhyAnTest(args) => run_test(args, TestPlan::PhyAnTest),
         Commands::AllTests(args) => all_tests(args),
     }
 }

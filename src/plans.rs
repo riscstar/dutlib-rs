@@ -51,3 +51,20 @@ pub fn latency_test(
 
     Ok(failures)
 }
+
+pub fn phy_an_test(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    tests::wait_for_ipv4(shell, adapter)?;
+
+    let mut failures = 0;
+
+    failures += tests::link_partner_advertise_all(shell, adapter, ipaddr)?;
+    failures += tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr)?;
+    // Check that the previous tests didn't damage anything when returning to default
+    failures += tests::link_partner_advertise_all(shell, adapter, ipaddr)?;
+
+    Ok(failures)
+}
