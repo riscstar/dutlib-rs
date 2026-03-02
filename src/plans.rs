@@ -3,18 +3,18 @@ use expectrl::Error;
 use crate::{CommandExecutor, tests};
 
 pub fn smoke_test(
-    console: &mut impl CommandExecutor,
-    name: &str,
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    tests::wait_for_ipv4(console, name)?;
+    tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
 
-    failures += tests::ping(console, ipaddr)?;
-    failures += tests::iperf3_bidir(console, ipaddr)?;
-    failures += tests::iperf3_tx(console, ipaddr)?;
-    failures += tests::iperf3_rx(console, ipaddr)?;
+    failures += tests::ping(shell, ipaddr)?;
+    failures += tests::iperf3_bidir(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_tx(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_rx(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }
@@ -36,18 +36,18 @@ pub fn functional_test(
 }
 
 pub fn latency_test(
-    console: &mut impl CommandExecutor,
-    name: &str,
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    tests::wait_for_ipv4(console, name)?;
+    tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
 
-    failures += tests::ping_1s(console, ipaddr)?;
-    failures += tests::ping_100ms(console, ipaddr)?;
-    failures += tests::ping_10ms(console, ipaddr)?;
-    failures += tests::ping_flood(console, ipaddr)?;
+    failures += tests::ping_1s(shell, ipaddr)?;
+    failures += tests::ping_100ms(shell, ipaddr)?;
+    failures += tests::ping_10ms(shell, ipaddr)?;
+    failures += tests::ping_flood(shell, ipaddr)?;
 
     Ok(failures)
 }
