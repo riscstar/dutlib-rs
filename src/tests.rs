@@ -123,9 +123,9 @@ pub fn ping_helper(
     })
 }
 
-/// Issue 4 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
+/// Issue 10 pings at 0.5s intervals, check for packet loss and confirm RTT summary exceeds threshold
 pub fn ping(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
-    ping_helper("ping", shell, ipaddr, "-c 4")
+    ping_helper("ping", shell, ipaddr, "-c 10 -i 0.5")
 }
 
 /// Issue 10 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
