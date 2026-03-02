@@ -20,17 +20,17 @@ pub fn smoke_test(
 }
 
 pub fn functional_test(
-    console: &mut impl CommandExecutor,
-    name: &str,
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    tests::wait_for_ipv4(console, name)?;
+    tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
 
-    failures += tests::scp_bidir(console, ipaddr)?;
-    failures += tests::scp_tx(console, ipaddr)?;
-    failures += tests::scp_rx(console, ipaddr)?;
+    failures += tests::scp_bidir(shell, ipaddr)?;
+    failures += tests::scp_tx(shell, ipaddr)?;
+    failures += tests::scp_rx(shell, ipaddr)?;
 
     Ok(failures)
 }

@@ -231,13 +231,29 @@ fn iperf3_helper(
     ))
 }
 
-pub fn iperf3_bidir(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+pub fn iperf3_bidir(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
     let (tx, rx) = iperf3_helper(shell, ipaddr, "--bidir")?;
     log::info!("iperf3_bidir: TX is {tx:?}, RX is {rx:?}");
 
+    let speed = adapter_speed(shell, adapter);
+    let (tthresh, rthresh) = (
+        speed * 0.8,
+        if speed >= 2500.0 {
+            // It might be due to the USB3 adapter but bidirectional transfers often
+            // have unexpectedly slow receive bandwidth (this is common between
+            // stmmac and vendor drivers)
+            speed * 0.44
+        } else {
+            speed * 0.8
+        },
+    );
+
     Ok(
-        //if tx[0] < 47.5 || tx[1] < 47.5 || rx[0] < 220.0 || rx[1] < 220.0 {
-        if tx[0] < 2000.0 || tx[1] < 2000.0 || rx[0] < 1250.0 || rx[1] < 1250.0 {
+        if tx[0] < tthresh || tx[1] < tthresh || rx[0] < rthresh || rx[1] < rthresh {
             log::warn!("iperf3_bidir: Network performance is too slow: tx {tx:?} rx {rx:?}");
             1
         } else {
@@ -246,11 +262,16 @@ pub fn iperf3_bidir(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u3
     )
 }
 
-pub fn iperf3_rx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+pub fn iperf3_rx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
     let bench = iperf3_helper(shell, ipaddr, "-R")?.0;
     log::info!("iperf3_rx: RX is {bench:?}");
+    let threshold = adapter_speed(shell, adapter) * 0.8;
 
-    Ok(if bench[0] < 2000.0 || bench[1] < 2000.0 {
+    Ok(if bench[0] < threshold || bench[1] < threshold {
         log::warn!("iperf3_rx: Network performance is too slow {bench:?}\n");
         1
     } else {
@@ -258,11 +279,16 @@ pub fn iperf3_rx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, 
     })
 }
 
-pub fn iperf3_tx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+pub fn iperf3_tx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
     let bench = iperf3_helper(shell, ipaddr, "")?.0;
     log::info!("iperf3_tx: TX performance is {bench:?}");
+    let threshold = adapter_speed(shell, adapter) * 0.8;
 
-    Ok(if bench[0] < 2000.0 || bench[1] < 2000.0 {
+    Ok(if bench[0] < threshold || bench[1] < threshold {
         log::warn!("iperf3_tx: Network performance is too slow {bench:?}\n");
         1
     } else {
