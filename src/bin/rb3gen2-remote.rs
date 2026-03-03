@@ -44,6 +44,9 @@ enum Commands {
     /// PHY Auto-Negotiation testing
     PhyAnTest(TestCli),
 
+    /// PHY Auto-Negotiation testing covering only 2.5Gb/s and 1Gb/s
+    PhyQuickTest(TestCli),
+
     /// Run all tests that do not require the board to be rebooted.
     AllTests(TestCli),
 }
@@ -80,6 +83,7 @@ pub enum TestPlan {
     FunctionalTest,
     LatencyTest,
     PhyAnTest,
+    PhyQuickTest,
 }
 
 type TestPlanRunner = fn(&mut ReplSession<OsSession>, &str, &str) -> Result<u32, Error>;
@@ -91,6 +95,7 @@ impl TestPlan {
             Self::FunctionalTest => "Functional tests",
             Self::LatencyTest => "Latency tests",
             Self::PhyAnTest => "PHY auto-negotiation tests",
+            Self::PhyQuickTest => "PHY quick auto-negotiation tests",
         }
     }
 
@@ -100,6 +105,7 @@ impl TestPlan {
             Self::FunctionalTest => plans::functional_test,
             Self::LatencyTest => plans::latency_test,
             Self::PhyAnTest => plans::phy_an_test,
+            Self::PhyQuickTest => plans::phy_quick_test,
         }
     }
 }
@@ -265,6 +271,7 @@ fn app() -> Result<(), Error> {
         Commands::FunctionalTest(args) => run_test(args, TestPlan::FunctionalTest),
         Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
         Commands::PhyAnTest(args) => run_test(args, TestPlan::PhyAnTest),
+        Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),
         Commands::AllTests(args) => all_tests(args),
     }
 }

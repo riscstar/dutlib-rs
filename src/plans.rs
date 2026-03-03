@@ -68,3 +68,18 @@ pub fn phy_an_test(
 
     Ok(failures)
 }
+
+pub fn phy_quick_test(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    tests::wait_for_ipv4(shell, adapter)?;
+
+    let mut failures = 0;
+
+    failures += tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr)?;
+    failures += tests::link_partner_advertise_all(shell, adapter, ipaddr)?;
+
+    Ok(failures)
+}
