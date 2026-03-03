@@ -63,6 +63,12 @@ pub fn phy_an_test(
 
     failures += tests::link_partner_advertise_all(shell, adapter, ipaddr)?;
     failures += tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr)?;
+    failures += tests::link_partner_advertise_100baset_full(shell, adapter, ipaddr)?;
+    failures += tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr)?;
+    failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
+    failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
+    failures += tests::link_mode_advertise_10baset_full(shell, adapter, ipaddr)?;
+
     // Check that the previous tests didn't damage anything when returning to default
     failures += tests::link_partner_advertise_all(shell, adapter, ipaddr)?;
 

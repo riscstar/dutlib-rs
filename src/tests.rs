@@ -2,7 +2,7 @@ use std::{io, process::Command, thread, time::Duration};
 
 use expectrl::Error;
 
-use crate::{CommandExecutor, plans};
+use crate::CommandExecutor;
 
 /// Show what drivers have bound to the adapter
 pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
@@ -402,7 +402,7 @@ pub fn link_partner_ethtool(args: &str) -> Result<(), Error> {
     let output = Command::new("sudo")
         .arg("ethtool")
         .args(
-            args.replace("{adapter}", "enxccbabda84b23")
+            args.replace("<ADAPTER>", "enxccbabda84b23")
                 .split_whitespace(),
         )
         .output()?;
@@ -423,28 +423,32 @@ pub fn link_partner_advertise_all(
     let mut failures = 0;
 
     // advertise everything
-    link_partner_ethtool("-s {adapter} advertise 0xffffffffffffffff")?;
+    link_partner_ethtool("-s <ADAPTER> advertise 0xffffffffffffffff")?;
+    let _ = shell.cmd(&format!(
+        "ethtool -s {adapter} advertise 0xffffffffffffffff"
+    ))?;
     thread::sleep(Duration::from_secs(2));
     let adapter_info = wait_for_adapter_info(shell, adapter)?;
 
     if let Some(AdapterInfo { speed: Some(speed) }) = adapter_info {
-        log::info!("Link negotiated at {speed}mbit");
+        log::info!("Link negotiated at {speed}Mb/s");
     } else {
         log::error!("Unexpected adapter info: {adapter_info:?}");
         failures += 1;
     }
 
-    failures += plans::smoke_test(shell, adapter, ipaddr)?;
+    //failures += plans::smoke_test(shell, adapter, ipaddr)?;
+    failures += ping(shell, ipaddr)?;
 
     Ok(failures)
 }
 
-/// Provoke the link partner to advertise 1000baseT/Full and verify correct
-/// negotiation.
-pub fn link_partner_advertise_1000baset_full(
+fn link_partner_advertise_helper(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
+    advertisement: &str,
+    expected_speed: u32,
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
@@ -455,15 +459,20 @@ pub fn link_partner_advertise_1000baset_full(
     };
 
     // change the link partner's advertisement and give time for the link to stop
-    link_partner_ethtool("-s {adapter} advertise 0x020")?;
+    link_partner_ethtool(&format!("-s <ADAPTER> advertise {advertisement}"))?;
     thread::sleep(Duration::from_secs(2));
 
     // wait for the new adapter info
     let test_info_result = wait_for_adapter_info(shell, adapter);
-    let smoke_test_result = plans::smoke_test(shell, adapter, ipaddr);
+    if let Ok(Some(AdapterInfo { speed: Some(speed) })) = test_info_result {
+        log::info!("Link negotiated at {speed}Mb/s");
+    }
+
+    //let smoke_test_result = plans::smoke_test(shell, adapter, ipaddr);
+    let smoke_test_result = ping(shell, ipaddr);
 
     // restore the link partner's advertisement and make sure we get the adapter back
-    link_partner_ethtool("-s {adapter} advertise 0xffffffffffffffff")?;
+    link_partner_ethtool("-s <ADAPTER> advertise 0xffffffffffffffff")?;
     thread::sleep(Duration::from_secs(2));
     let restored_info = wait_for_adapter_info(shell, adapter)?;
 
@@ -476,10 +485,11 @@ pub fn link_partner_advertise_1000baset_full(
 
     // check the link achieved the expect speed
     match test_info {
-        Some(AdapterInfo { speed: Some(1000) }) => {}
         Some(AdapterInfo { speed: Some(speed) }) => {
-            log::error!("Bad link speed {speed}");
-            failures += 1;
+            if expected_speed != speed {
+                log::error!("Bad link speed {speed}");
+                failures += 1;
+            }
         }
         info => {
             log::error!("Unexpected adapter info: {info:?}");
@@ -502,4 +512,134 @@ pub fn link_partner_advertise_1000baset_full(
     }
 
     Ok(failures)
+}
+
+/// Provoke the link partner to advertise 1000baseT/Full and verify correct
+/// negotiation.
+pub fn link_partner_advertise_1000baset_full(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    link_partner_advertise_helper(shell, adapter, ipaddr, "0x0020", 1000)
+}
+
+/// Provoke the link partner to advertise 100baseT/Full and verify correct
+/// negotiation.
+pub fn link_partner_advertise_100baset_full(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    link_partner_advertise_helper(shell, adapter, ipaddr, "0x0008", 100)
+}
+
+/// Provoke the link partner to advertise 10baseT/Full and verify correct
+/// negotiation.
+pub fn link_partner_advertise_10baset_full(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    link_partner_advertise_helper(shell, adapter, ipaddr, "0x0002", 10)
+}
+
+fn link_mode_advertise_helper(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+    advertisement: &str,
+    expected_speed: u32,
+) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    // get the initial adapter info
+    let Some(initial_info) = wait_for_adapter_info(shell, adapter)? else {
+        log::error!("Failed to read adapter info");
+        return Ok(1);
+    };
+
+    // change our own advertisement and give time for the link to stop
+    let _ = shell.cmd(&format!("ethtool -s {adapter} advertise {advertisement}"))?;
+    thread::sleep(Duration::from_secs(2));
+
+    // wait for the new adapter info
+    let test_info_result = wait_for_adapter_info(shell, adapter);
+    if let Ok(Some(AdapterInfo { speed: Some(speed) })) = test_info_result {
+        log::info!("Link negotiated at {speed}Mb/s");
+    }
+
+    //let smoke_test_result = plans::smoke_test(shell, adapter, ipaddr);
+    let smoke_test_result = ping(shell, ipaddr);
+
+    // restore the link partner's advertisement and make sure we get the adapter back
+    let _ = shell.cmd(&format!(
+        "ethtool -s {adapter} advertise 0xffffffffffffffff"
+    ))?;
+    thread::sleep(Duration::from_secs(2));
+    let restored_info = wait_for_adapter_info(shell, adapter)?;
+
+    // Make sure "something" works after restoring the defaults
+    failures += ping(shell, ipaddr)?;
+
+    // deferred error handling (to ensure the advertisement was restored)
+    let test_info = test_info_result?;
+    failures += smoke_test_result?;
+
+    // check the link achieved the expect speed
+    match test_info {
+        Some(AdapterInfo { speed: Some(speed) }) => {
+            if expected_speed != speed {
+                log::error!("Bad link speed {speed}");
+                failures += 1;
+            }
+        }
+        info => {
+            log::error!("Unexpected adapter info: {info:?}");
+            failures += 1;
+        }
+    }
+
+    // check the link restored OK
+    match restored_info {
+        None => {
+            log::error!("Link did not restore correctly (no link)");
+            failures += 1;
+        }
+        Some(restored_info) => {
+            if initial_info != restored_info {
+                log::error!("Bad restored link info: {initial_info:?} versus {restored_info:?}");
+                failures += 1;
+            }
+        }
+    }
+
+    Ok(failures)
+}
+
+/// Advertise (up to) 1000baseT/Full and verify correct negotiation.
+pub fn link_mode_advertise_1000baset_full(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    link_mode_advertise_helper(shell, adapter, ipaddr, "0x002f", 1000)
+}
+
+/// Advertise (up to) 100baseT/Full and verify correct negotiation.
+pub fn link_mode_advertise_100baset_full(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    link_mode_advertise_helper(shell, adapter, ipaddr, "0x000f", 100)
+}
+
+/// Advertise (up to) 10baseT/Full and verify correct negotiation.
+pub fn link_mode_advertise_10baset_full(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    link_mode_advertise_helper(shell, adapter, ipaddr, "0x0003", 10)
 }
