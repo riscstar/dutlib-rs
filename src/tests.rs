@@ -241,14 +241,14 @@ pub fn iperf3_bidir(
 
     let speed = adapter_speed(shell, adapter);
     let (tthresh, rthresh) = (
-        speed * 0.8,
+        speed * 0.75,
         if speed >= 2500.0 {
             // It might be due to the USB3 adapter but bidirectional transfers often
             // have unexpectedly slow receive bandwidth (this is common between
             // stmmac and vendor drivers)
             speed * 0.44
         } else {
-            speed * 0.8
+            speed * 0.75
         },
     );
 
