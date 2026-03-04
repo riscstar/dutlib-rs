@@ -38,6 +38,9 @@ enum Commands {
     /// Latency testing (using ping)
     LatencyTest(TestCli),
 
+    /// PHY Auto-Negotiation testing covering only local advertisements
+    PhyQuickTest(TestCli),
+
     /// Run all tests that do not require the board to be rebooted.
     AllTests(TestCli),
 }
@@ -62,6 +65,7 @@ pub enum TestPlan {
     SmokeTest,
     FunctionalTest,
     LatencyTest,
+    PhyQuickTest,
 }
 
 type TestPlanRunner = fn(&mut NativeExecutor, &str, &str) -> Result<u32, Error>;
@@ -72,6 +76,7 @@ impl TestPlan {
             Self::SmokeTest => "Smoke tests",
             Self::FunctionalTest => "Functional tests",
             Self::LatencyTest => "Latency tests",
+            Self::PhyQuickTest => "PHY quick auto-negotiation tests",
         }
     }
 
@@ -80,6 +85,7 @@ impl TestPlan {
             Self::SmokeTest => plans::smoke_test,
             Self::FunctionalTest => plans::functional_test,
             Self::LatencyTest => plans::latency_test,
+            Self::PhyQuickTest => plans::phy_quick_test,
         }
     }
 }
@@ -148,19 +154,20 @@ fn cycle(args: CycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test<T>(args: TestCli, test_plan: T) -> Result<(), Error>
-where
-    T: FnOnce(&mut NativeExecutor, &str, &str) -> Result<u32, Error>,
-{
+fn run_test(args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&args.module)?;
 
-    match test_plan(&mut shell, &args.name, &args.ipaddr) {
-        Ok(0) => Ok(()),
-        Ok(n) => Err(io::Error::other(format!("{n} failures reported")).into()),
+    let name = test_plan.name();
+    match test_plan.runner()(&mut shell, &args.name, &args.ipaddr) {
+        Ok(0) => {
+            log::info!("{name} completed successfully");
+            Ok(())
+        }
+        Ok(n) => Err(io::Error::other(format!("{name} reported {n} failures")).into()),
         Err(e) => {
-            log::error!("Test plan did not complete");
+            log::error!("{name} did not complete");
             log::info!("Debug info: {:?}", shell.try_read_to_string());
             Err(e)
         }
@@ -172,6 +179,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
         TestPlan::SmokeTest,
         TestPlan::FunctionalTest,
         TestPlan::LatencyTest,
+        TestPlan::PhyQuickTest,
     ];
 
     let mut shell = NativeExecutor::new();
@@ -237,10 +245,11 @@ fn app() -> Result<(), Error> {
     };
 
     let result = match cli.command {
-        Commands::SmokeTest(args) => run_test(args, plans::smoke_test),
+        Commands::SmokeTest(args) => run_test(args, TestPlan::SmokeTest),
         Commands::Cycle(args) => cycle(args),
-        Commands::FunctionalTest(args) => run_test(args, plans::functional_test),
-        Commands::LatencyTest(args) => run_test(args, plans::latency_test),
+        Commands::FunctionalTest(args) => run_test(args, TestPlan::FunctionalTest),
+        Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
+        Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),
         Commands::AllTests(args) => all_tests(args),
     };
 

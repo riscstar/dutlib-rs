@@ -44,7 +44,7 @@ enum Commands {
     /// PHY Auto-Negotiation testing
     PhyAnTest(TestCli),
 
-    /// PHY Auto-Negotiation testing covering only 2.5Gb/s and 1Gb/s
+    /// PHY Auto-Negotiation testing covering only local advertisements
     PhyQuickTest(TestCli),
 
     /// Run all tests that do not require the board to be rebooted.
@@ -192,7 +192,7 @@ fn run_test(args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
         }
         Ok(n) => Err(io::Error::other(format!("{name} reported {n} failures")).into()),
         Err(e) => {
-            log::error!("Test plan failed to complete due to internal error");
+            log::error!("{name} did not complete");
             log::info!("{:?}", console.try_read_to_string());
             Err(e)
         }

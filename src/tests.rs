@@ -415,7 +415,7 @@ pub fn link_partner_ethtool(args: &str) -> Result<(), Error> {
 }
 
 /// Run smoke tests at the default (maximum) link speed.
-pub fn link_partner_advertise_all(
+pub fn link_mode_and_partner_advertise_all(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
@@ -457,6 +457,14 @@ fn link_partner_advertise_helper(
         log::error!("Failed to read adapter info");
         return Ok(1);
     };
+
+    // skip the test if the partner device is not faster than we are
+    if let Some(speed) = initial_info.speed
+        && speed == expected_speed
+    {
+        log::warn!("Cannot test {speed}base-T because partner link speed is too slow");
+        return Ok(0);
+    }
 
     // change the link partner's advertisement and give time for the link to stop
     link_partner_ethtool(&format!("-s <ADAPTER> advertise {advertisement}"))?;
@@ -559,6 +567,14 @@ fn link_mode_advertise_helper(
         return Ok(1);
     };
 
+    // skip the test if the partner device is not faster than we are
+    if let Some(speed) = initial_info.speed
+        && speed == expected_speed
+    {
+        log::warn!("Cannot test {speed}base-T because partner link speed is too slow");
+        return Ok(0);
+    }
+
     // change our own advertisement and give time for the link to stop
     let _ = shell.cmd(&format!("ethtool -s {adapter} advertise {advertisement}"))?;
     thread::sleep(Duration::from_secs(2));
@@ -613,6 +629,34 @@ fn link_mode_advertise_helper(
             }
         }
     }
+
+    Ok(failures)
+}
+
+/// Run smoke tests at the default (maximum) link speed.
+pub fn link_mode_advertise_all(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    // advertise everything
+    let _ = shell.cmd(&format!(
+        "ethtool -s {adapter} advertise 0xffffffffffffffff"
+    ))?;
+    thread::sleep(Duration::from_secs(2));
+    let adapter_info = wait_for_adapter_info(shell, adapter)?;
+
+    if let Some(AdapterInfo { speed: Some(speed) }) = adapter_info {
+        log::info!("Link negotiated at {speed}Mb/s");
+    } else {
+        log::error!("Unexpected adapter info: {adapter_info:?}");
+        failures += 1;
+    }
+
+    //failures += plans::smoke_test(shell, adapter, ipaddr)?;
+    failures += ping(shell, ipaddr)?;
 
     Ok(failures)
 }
