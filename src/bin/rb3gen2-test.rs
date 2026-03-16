@@ -35,6 +35,9 @@ enum Commands {
     /// Functional testing (inc. data integrity)
     FunctionalTest(TestCli),
 
+    /// Bandwidth testing
+    BandwidthTest(TestCli),
+
     /// Latency testing (using ping)
     LatencyTest(TestCli),
 
@@ -64,6 +67,7 @@ pub struct TestCli {
 pub enum TestPlan {
     SmokeTest,
     FunctionalTest,
+    BandwidthTest,
     LatencyTest,
     PhyQuickTest,
 }
@@ -75,6 +79,7 @@ impl TestPlan {
         match self {
             Self::SmokeTest => "Smoke tests",
             Self::FunctionalTest => "Functional tests",
+            Self::BandwidthTest => "Bandwidth tests",
             Self::LatencyTest => "Latency tests",
             Self::PhyQuickTest => "PHY quick auto-negotiation tests",
         }
@@ -84,6 +89,7 @@ impl TestPlan {
         match self {
             Self::SmokeTest => plans::smoke_test,
             Self::FunctionalTest => plans::functional_test,
+            Self::BandwidthTest => plans::bandwidth_test,
             Self::LatencyTest => plans::latency_test,
             Self::PhyQuickTest => plans::phy_quick_test,
         }
@@ -128,12 +134,6 @@ fn cycle(args: CycleCli) -> Result<(), Error> {
     for cycle in 0..args.cycles {
         match args.plan.runner()(&mut shell, &args.name, &args.ipaddr)? {
             0 => good += 1,
-            n if args.halt => {
-                return Err(io::Error::other(format!(
-                    "FAILED after {good} iterations ({n} tests failed"
-                ))
-                .into());
-            }
             n => {
                 bad += 1;
                 log::error!("{n} tests failed");
@@ -146,8 +146,10 @@ fn cycle(args: CycleCli) -> Result<(), Error> {
                 (100 * good) as f64 / (good + bad) as f64,
                 cycle + 1
             );
-        } else {
+        } else if bad == 0 {
             log::info!("Successfully completed {good} iterations");
+        } else {
+            return Err(io::Error::other(format!("FAILED after {good} iterations")).into());
         }
     }
 
@@ -178,6 +180,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
     let tests = [
         TestPlan::SmokeTest,
         TestPlan::FunctionalTest,
+        TestPlan::BandwidthTest,
         TestPlan::LatencyTest,
         TestPlan::PhyQuickTest,
     ];
@@ -248,6 +251,7 @@ fn app() -> Result<(), Error> {
         Commands::SmokeTest(args) => run_test(args, TestPlan::SmokeTest),
         Commands::Cycle(args) => cycle(args),
         Commands::FunctionalTest(args) => run_test(args, TestPlan::FunctionalTest),
+        Commands::BandwidthTest(args) => run_test(args, TestPlan::BandwidthTest),
         Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
         Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),
         Commands::AllTests(args) => all_tests(args),

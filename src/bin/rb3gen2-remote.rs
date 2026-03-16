@@ -38,6 +38,9 @@ enum Commands {
     /// Functional testing (inc. data integrity)
     FunctionalTest(TestCli),
 
+    /// Bandwidth testing
+    BandwidthTest(TestCli),
+
     /// Latency testing (using ping)
     LatencyTest(TestCli),
 
@@ -81,6 +84,7 @@ pub struct TestCli {
 pub enum TestPlan {
     SmokeTest,
     FunctionalTest,
+    BandwidthTest,
     LatencyTest,
     PhyAnTest,
     PhyQuickTest,
@@ -93,6 +97,7 @@ impl TestPlan {
         match self {
             Self::SmokeTest => "Smoke tests",
             Self::FunctionalTest => "Functional tests",
+            Self::BandwidthTest => "Bandwidth tests",
             Self::LatencyTest => "Latency tests",
             Self::PhyAnTest => "PHY auto-negotiation tests",
             Self::PhyQuickTest => "PHY quick auto-negotiation tests",
@@ -103,6 +108,7 @@ impl TestPlan {
         match self {
             Self::SmokeTest => plans::smoke_test,
             Self::FunctionalTest => plans::functional_test,
+            Self::BandwidthTest => plans::bandwidth_test,
             Self::LatencyTest => plans::latency_test,
             Self::PhyAnTest => plans::phy_an_test,
             Self::PhyQuickTest => plans::phy_quick_test,
@@ -131,6 +137,10 @@ pub struct BootCycleCli {
     /// Set the number of times to run the test plan per boot
     #[arg(long, default_value_t = 1)]
     cycles_per_boot: u32,
+
+    /// Halt on first error
+    #[arg(short, long)]
+    halt: bool,
 
     /// Choose which test plan to cycle through
     #[arg(short, long, default_value = "smoke-test")]
@@ -169,11 +179,17 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
             }
         };
 
-        log::info!(
-            "Boot success is {:4.1}% after {} iterations",
-            (100 * good) as f64 / (good + bad) as f64,
-            cycle + 1
-        );
+        if !args.halt {
+            log::info!(
+                "Boot success is {:4.1}% after {} iterations",
+                (100 * good) as f64 / (good + bad) as f64,
+                cycle + 1
+            );
+        } else if bad == 0 {
+            log::info!("Successfully completed {good} iterations");
+        } else {
+            return Err(io::Error::other(format!("FAILED after {good} iterations")).into());
+        }
     }
 
     Ok(())
@@ -203,6 +219,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
     let tests = [
         TestPlan::SmokeTest,
         TestPlan::FunctionalTest,
+        TestPlan::BandwidthTest,
         TestPlan::LatencyTest,
         TestPlan::PhyAnTest,
     ];
@@ -269,6 +286,7 @@ fn app() -> Result<(), Error> {
         Commands::SmokeTest(args) => run_test(args, TestPlan::SmokeTest),
         Commands::BootCycle(args) => boot_cycle(args),
         Commands::FunctionalTest(args) => run_test(args, TestPlan::FunctionalTest),
+        Commands::BandwidthTest(args) => run_test(args, TestPlan::BandwidthTest),
         Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
         Commands::PhyAnTest(args) => run_test(args, TestPlan::PhyAnTest),
         Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),

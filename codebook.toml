@@ -1,9 +1,12 @@
 words = [
+    "bidir",
     "dut",
     "dutlib",
     "ethtool",
     "ipv",
+    "mbps",
     "mdev",
+    "phy",
     "replsession",
     "sysfs",
     "urandom",

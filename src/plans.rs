@@ -35,6 +35,25 @@ pub fn functional_test(
     Ok(failures)
 }
 
+pub fn bandwidth_test(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    tests::wait_for_ipv4(shell, adapter)?;
+
+    let mut failures = 0;
+
+    //failures += tests::iperf3_intervals_bidir(shell, adapter, ipaddr)?;
+    //failures += tests::iperf3_intervals_tx(shell, adapter, ipaddr)?;
+    //failures += tests::iperf3_intervals_rx(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_udp_bidir(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_udp_tx(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_udp_rx(shell, adapter, ipaddr)?;
+
+    Ok(failures)
+}
+
 pub fn latency_test(
     shell: &mut impl CommandExecutor,
     adapter: &str,
@@ -48,6 +67,21 @@ pub fn latency_test(
     failures += tests::ping_100ms(shell, ipaddr)?;
     failures += tests::ping_10ms(shell, ipaddr)?;
     failures += tests::ping_flood(shell, ipaddr)?;
+
+    Ok(failures)
+}
+
+pub fn phy_smoke_test(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    tests::wait_for_ipv4(shell, adapter)?;
+
+    let mut failures = 0;
+
+    failures += tests::ping(shell, ipaddr)?;
+    failures += tests::iperf3_bidir(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }

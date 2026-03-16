@@ -1,8 +1,9 @@
 use std::{io, process::Command, thread, time::Duration};
 
 use expectrl::Error;
+use serde::Deserialize;
 
-use crate::CommandExecutor;
+use crate::{CommandExecutor, plans};
 
 /// Show what drivers have bound to the adapter
 pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
@@ -241,14 +242,12 @@ pub fn iperf3_bidir(
 
     let speed = adapter_speed(shell, adapter);
     let (tthresh, rthresh) = (
-        speed * 0.75,
+        speed * 0.7,
         if speed >= 2500.0 {
-            // It might be due to the USB3 adapter but bidirectional transfers often
-            // have unexpectedly slow receive bandwidth (this is common between
-            // stmmac and vendor drivers)
-            speed * 0.44
+            // TODO: At 2.5Gb/s we don't achieve peak RX bandwidth
+            speed * 0.5
         } else {
-            speed * 0.75
+            speed * 0.7
         },
     );
 
@@ -437,8 +436,7 @@ pub fn link_mode_and_partner_advertise_all(
         failures += 1;
     }
 
-    //failures += plans::smoke_test(shell, adapter, ipaddr)?;
-    failures += ping(shell, ipaddr)?;
+    failures += plans::phy_smoke_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }
@@ -476,8 +474,7 @@ fn link_partner_advertise_helper(
         log::info!("Link negotiated at {speed}Mb/s");
     }
 
-    //let smoke_test_result = plans::smoke_test(shell, adapter, ipaddr);
-    let smoke_test_result = ping(shell, ipaddr);
+    let smoke_test_result = plans::phy_smoke_test(shell, adapter, ipaddr);
 
     // restore the link partner's advertisement and make sure we get the adapter back
     link_partner_ethtool("-s <ADAPTER> advertise 0xffffffffffffffff")?;
@@ -585,8 +582,7 @@ fn link_mode_advertise_helper(
         log::info!("Link negotiated at {speed}Mb/s");
     }
 
-    //let smoke_test_result = plans::smoke_test(shell, adapter, ipaddr);
-    let smoke_test_result = ping(shell, ipaddr);
+    let smoke_test_result = plans::phy_smoke_test(shell, adapter, ipaddr);
 
     // restore the link partner's advertisement and make sure we get the adapter back
     let _ = shell.cmd(&format!(
@@ -655,8 +651,7 @@ pub fn link_mode_advertise_all(
         failures += 1;
     }
 
-    //failures += plans::smoke_test(shell, adapter, ipaddr)?;
-    failures += ping(shell, ipaddr)?;
+    failures += plans::phy_smoke_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }
@@ -686,4 +681,314 @@ pub fn link_mode_advertise_10baset_full(
     ipaddr: &str,
 ) -> Result<u32, Error> {
     link_mode_advertise_helper(shell, adapter, ipaddr, "0x0003", 10)
+}
+
+//
+// Bandwidth tests
+//
+
+#[derive(Debug, Deserialize)]
+pub struct IperfResult {
+    pub intervals: Vec<Interval>,
+    pub end: End,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Interval {
+    pub streams: Vec<StreamStats>,
+    pub sum: Option<StreamStats>,
+    pub sum_bidir_reverse: Option<StreamStats>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct End {
+    pub streams: Vec<EndStreams>,
+    pub sum: Option<StreamStats>,
+    pub sum_sent: Option<StreamStats>,
+    pub sum_received: Option<StreamStats>,
+    pub sum_bidir_reverse: Option<StreamStats>,
+    pub sum_sent_bidir_reverse: Option<StreamStats>,
+    pub sum_received_bidir_reverse: Option<StreamStats>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EndStreams {
+    pub sender: Option<StreamStats>,
+    pub receiver: Option<StreamStats>,
+    pub udp: Option<StreamStats>,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Default)]
+pub struct StreamStats {
+    pub bits_per_second: f64,
+    pub lost_percent: Option<f64>,
+}
+
+fn get_mbps(stats: Option<StreamStats>) -> f64 {
+    stats.unwrap_or(StreamStats::default()).bits_per_second / 1000000.0
+}
+
+fn get_lost_percent(stats: Option<StreamStats>) -> f64 {
+    stats
+        .unwrap_or(StreamStats::default())
+        .lost_percent
+        .unwrap_or(100.0)
+}
+
+fn iperf3_new_helper(
+    shell: &mut impl CommandExecutor,
+    ipaddr: &str,
+    args: &str,
+) -> Result<IperfResult, Error> {
+    let reply = shell.with_timeout_secs(35, |sh| {
+        sh.cmd(&format!("iperf3 -c {ipaddr} -t 30 --json {args}"))
+    })?;
+
+    // During iperf3 execution there could be AER error reports on the console.
+    // We need to skip these to ensure the JSON parses correctly.
+    let offset = reply.find("{").unwrap_or(0);
+
+    let json = serde_json::from_str(&reply[offset..]).map_err(|e| {
+        log::error!("{e}");
+        io::Error::other("Cannot parse JSON from iperf3")
+    })?;
+
+    Ok(json)
+}
+
+pub fn iperf3_intervals_bidir(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(shell, ipaddr, "-i 5 --bidir")?;
+
+    let speed_mbps = adapter_speed(shell, adapter);
+
+    let mut failures = 0;
+    let tx_threshold = speed_mbps * 0.8;
+    let rx_threshold = speed_mbps * 0.6;
+
+    for (i, (tx, rx)) in stats
+        .intervals
+        .iter()
+        .map(|interval| (get_mbps(interval.sum), get_mbps(interval.sum_bidir_reverse)))
+        .enumerate()
+    {
+        if tx < tx_threshold || rx < rx_threshold {
+            log::warn!(
+                "iperf3_intervals_bidir: interval #{i}: Network performance is too slow: TX {tx:0.1}, RX {rx:0.1}"
+            );
+            failures += 1;
+        } else {
+            log::info!("iperf3_intervals_bidir: interval #{i}: TX {tx:0.1}, RX {rx:0.1}");
+        }
+    }
+
+    let tx_us = get_mbps(stats.end.sum_sent);
+    let rx_them = get_mbps(stats.end.sum_received);
+    let tx_them = get_mbps(stats.end.sum_sent_bidir_reverse);
+    let rx_us = get_mbps(stats.end.sum_received_bidir_reverse);
+
+    if tx_us < tx_threshold
+        || rx_them < tx_threshold
+        || rx_us < rx_threshold
+        || tx_them < rx_threshold
+    {
+        log::warn!(
+            "iperf3_intervals_bidir: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+        failures += 1;
+    } else {
+        log::info!(
+            "iperf3_intervals_bidir: Overall: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+    }
+
+    Ok(failures)
+}
+
+pub fn iperf3_intervals_tx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(shell, ipaddr, "-i 5")?;
+
+    let speed_mbps = adapter_speed(shell, adapter);
+
+    let mut failures = 0;
+    let tx_threshold = speed_mbps * 0.8;
+
+    for (i, tx) in stats
+        .intervals
+        .iter()
+        .map(|interval| get_mbps(interval.sum))
+        .enumerate()
+    {
+        if tx < tx_threshold {
+            log::warn!(
+                "iperf3_intervals_tx: interval #{i}: Network performance is too slow: TX {tx:0.1}"
+            );
+            failures += 1;
+        } else {
+            log::info!("iperf3_intervals_tx: interval #{i}: TX {tx:0.1}");
+        }
+    }
+
+    let tx_us = get_mbps(stats.end.sum_sent);
+    let rx_them = get_mbps(stats.end.sum_received);
+
+    if tx_us < tx_threshold || rx_them < tx_threshold {
+        log::warn!(
+            "iperf3_intervals_tx: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1})"
+        );
+        failures += 1;
+    } else {
+        log::info!("iperf3_intervals_tx: Overall: TX {tx_us:0.1} ({rx_them:0.1})");
+    }
+
+    Ok(failures)
+}
+
+pub fn iperf3_intervals_rx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(shell, ipaddr, "-i 5 -R")?;
+
+    let speed_mbps = adapter_speed(shell, adapter);
+
+    let mut failures = 0;
+    let rx_threshold = speed_mbps * 0.8;
+
+    for (i, rx) in stats
+        .intervals
+        .iter()
+        .map(|interval| get_mbps(interval.sum))
+        .enumerate()
+    {
+        if rx < rx_threshold {
+            log::warn!(
+                "iperf3_intervals_rx: interval #{i}: Network performance is too slow: RX {rx:0.1}"
+            );
+            failures += 1;
+        } else {
+            log::info!("iperf3_intervals_rx: interval #{i}: RX {rx:0.1}");
+        }
+    }
+
+    let tx_them = get_mbps(stats.end.sum_sent);
+    let rx_us = get_mbps(stats.end.sum_received);
+
+    if rx_us < rx_threshold || tx_them < rx_threshold {
+        log::warn!(
+            "iperf3_intervals_rx: Overall: Network performance is too slow: RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+        failures += 1;
+    } else {
+        log::info!("iperf3_intervals_rx: Overall: RX {rx_us:0.1} ({tx_them:0.1})");
+    }
+
+    Ok(failures)
+}
+
+pub fn iperf3_udp_bidir(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let speed_mbps = adapter_speed(shell, adapter);
+    let bitrate = (speed_mbps * 0.8) as u32;
+
+    let stats = iperf3_new_helper(
+        shell,
+        ipaddr,
+        &format!("-i 5 --udp --bitrate {bitrate}M --bidir"),
+    )?;
+
+    if stats.end.streams.len() != 2 {
+        log::error!("Unexpected reply from iperf3");
+        return Ok(1);
+    }
+
+    let mut failures = 0;
+    let threshold = 5.0;
+
+    let rx = get_lost_percent(stats.end.streams[0].udp);
+    let tx = get_lost_percent(stats.end.streams[1].udp);
+
+    if rx > threshold || tx > threshold {
+        log::warn!("iperf3_udp_bidir: Packet loss too high: TX {tx:0.1}, RX {rx:0.1}");
+        failures += 1;
+    } else {
+        log::info!("iperf3_udp_bidir: Packet loss OK: TX {tx:0.1}, RX {rx:0.1}");
+    }
+
+    Ok(failures)
+}
+
+pub fn iperf3_udp_tx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let speed_mbps = adapter_speed(shell, adapter);
+    let bitrate = (speed_mbps * 0.8) as u32;
+
+    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 5 --udp --bitrate {bitrate}M"))?;
+
+    if stats.end.streams.len() != 1 {
+        log::error!("Unexpected reply from iperf3");
+        return Ok(1);
+    }
+
+    let mut failures = 0;
+    let threshold = 5.0;
+
+    let tx = get_lost_percent(stats.end.streams[0].udp);
+
+    if tx > threshold {
+        log::warn!("iperf3_udp_tx: Packet loss too high: TX {tx:0.1}");
+        failures += 1;
+    } else {
+        log::info!("iperf3_udp_tx: Packet loss OK: TX {tx:0.1}");
+    }
+
+    Ok(failures)
+}
+
+pub fn iperf3_udp_rx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let speed_mbps = adapter_speed(shell, adapter);
+    let bitrate = (speed_mbps * 0.8) as u32;
+
+    let stats = iperf3_new_helper(
+        shell,
+        ipaddr,
+        &format!("-i 5 --udp --bitrate {bitrate}M -R"),
+    )?;
+
+    if stats.end.streams.len() != 1 {
+        log::error!("Unexpected reply from iperf3");
+        return Ok(1);
+    }
+
+    let mut failures = 0;
+    let threshold = 5.0;
+
+    let rx = get_lost_percent(stats.end.streams[0].udp);
+
+    if rx > threshold {
+        log::warn!("iperf3_udp_rx: Packet loss too high: RX {rx:0.1}");
+        failures += 1;
+    } else {
+        log::info!("iperf3_udp_rx: Packet loss OK: RX {rx:0.1}");
+    }
+
+    Ok(failures)
 }
