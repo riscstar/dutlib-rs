@@ -44,12 +44,15 @@ pub fn bandwidth_test(
 
     let mut failures = 0;
 
-    //failures += tests::iperf3_intervals_bidir(shell, adapter, ipaddr)?;
-    //failures += tests::iperf3_intervals_tx(shell, adapter, ipaddr)?;
-    //failures += tests::iperf3_intervals_rx(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_intervals_bidir(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_intervals_tx(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_intervals_rx(shell, adapter, ipaddr)?;
     failures += tests::iperf3_udp_bidir(shell, adapter, ipaddr)?;
     failures += tests::iperf3_udp_tx(shell, adapter, ipaddr)?;
     failures += tests::iperf3_udp_rx(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_x16_bidir(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_x16_tx(shell, adapter, ipaddr)?;
+    failures += tests::iperf3_x16_rx(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }

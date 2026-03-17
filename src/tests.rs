@@ -992,3 +992,151 @@ pub fn iperf3_udp_rx(
 
     Ok(failures)
 }
+
+pub fn iperf3_x16_bidir(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 8 --bidir"))?;
+
+    let speed_mbps = adapter_speed(shell, adapter);
+
+    let mut failures = 0;
+    let tx_threshold = speed_mbps * 0.8;
+    let rx_threshold = speed_mbps * 0.6;
+    let stream_threshold = tx_threshold.min(rx_threshold) / 8.0;
+
+    for (i, (sender, receiver)) in stats
+        .end
+        .streams
+        .iter()
+        .map(|stream| (get_mbps(stream.sender), get_mbps(stream.receiver)))
+        .enumerate()
+    {
+        // The "us" and "them" is mixed in the streams array making it
+        // difficult to figure out which sockets are used to TX and which for
+        // RX (which whether it is us or them that is the sender). We therefore
+        // compare both values against a common minimum threshold.
+        if sender < stream_threshold || receiver < stream_threshold {
+            log::warn!(
+                "iperf3_x16_bidir: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
+            );
+            failures += 1;
+        } else {
+            log::info!("iperf3_x16_bidir: stream #{i}: Send {sender:0.1}, Recv {receiver:0.1}");
+        }
+    }
+
+    let tx_us = get_mbps(stats.end.sum_sent);
+    let rx_them = get_mbps(stats.end.sum_received);
+    let tx_them = get_mbps(stats.end.sum_sent_bidir_reverse);
+    let rx_us = get_mbps(stats.end.sum_received_bidir_reverse);
+
+    if tx_us < tx_threshold
+        || rx_them < tx_threshold
+        || rx_us < rx_threshold
+        || tx_them < rx_threshold
+    {
+        log::warn!(
+            "iperf3_x16_bidir: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+        failures += 1;
+    } else {
+        log::info!(
+            "iperf3_x16_bidir: Overall: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+    }
+
+    Ok(failures)
+}
+
+pub fn iperf3_x16_tx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 16"))?;
+
+    let speed_mbps = adapter_speed(shell, adapter);
+
+    let mut failures = 0;
+    let tx_threshold = speed_mbps * 0.8;
+    let stream_threshold = tx_threshold / 16.0;
+
+    for (i, (sender, receiver)) in stats
+        .end
+        .streams
+        .iter()
+        .map(|stream| (get_mbps(stream.sender), get_mbps(stream.receiver)))
+        .enumerate()
+    {
+        if sender < stream_threshold || receiver < stream_threshold {
+            log::warn!(
+                "iperf3_x16_tx: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
+            );
+            failures += 1;
+        } else {
+            log::info!("iperf3_x16_tx: stream #{i}: Send {sender:0.1}, Recv {receiver:0.1}");
+        }
+    }
+
+    let tx_us = get_mbps(stats.end.sum_sent);
+    let rx_them = get_mbps(stats.end.sum_received);
+
+    if tx_us < tx_threshold || rx_them < tx_threshold {
+        log::warn!(
+            "iperf3_x16_tx: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1})"
+        );
+        failures += 1;
+    } else {
+        log::info!("iperf3_x16_tx: Overall: TX {tx_us:0.1} ({rx_them:0.1})");
+    }
+
+    Ok(failures)
+}
+
+pub fn iperf3_x16_rx(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 16 -R"))?;
+
+    let speed_mbps = adapter_speed(shell, adapter);
+
+    let mut failures = 0;
+    let rx_threshold = speed_mbps * 0.6;
+    let stream_threshold = rx_threshold / 16.0;
+
+    for (i, (sender, receiver)) in stats
+        .end
+        .streams
+        .iter()
+        .map(|stream| (get_mbps(stream.sender), get_mbps(stream.receiver)))
+        .enumerate()
+    {
+        if sender < stream_threshold || receiver < stream_threshold {
+            log::warn!(
+                "iperf3_x16_rx: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
+            );
+            failures += 1;
+        } else {
+            log::info!("iperf3_x16_rx: stream #{i}: Send {sender:0.1}, Recv {receiver:0.1}");
+        }
+    }
+
+    let rx_us = get_mbps(stats.end.sum_received);
+    let tx_them = get_mbps(stats.end.sum_sent);
+
+    if rx_us < rx_threshold || tx_them < rx_threshold {
+        log::warn!(
+            "iperf3_x16_rx: Overall: Network performance is too slow: RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+        failures += 1;
+    } else {
+        log::info!("iperf3_x16_rx: Overall: RX {rx_us:0.1} ({tx_them:0.1})");
+    }
+
+    Ok(failures)
+}
