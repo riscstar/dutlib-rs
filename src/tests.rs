@@ -303,7 +303,7 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
     // dwmac-tc956x 0001:05:00.1 enP1p5s0f1: PHY [stmmac-501:1c] driver [Qualcomm QCA8081] (irq=279)
     static PHY_DRIVER_IRQ: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r#": PHY \[(?P<address>[^\]]+)\] driver \[(?P<driver>[^\]]+)\] \((?P<irq>[^)]+)\)"#,
+            r#": PHY \[(?P<address>[^\]]+)\] driver \[(?P<driver>[^\]]+)\] \(irq=(?P<irq>[^)]+)\)"#,
         )
         .unwrap()
     });
@@ -1208,6 +1208,35 @@ pub fn iperf3_x16_rx(
     } else {
         log::info!("iperf3_x16_rx: Overall: RX {rx_us:0.1} ({tx_them:0.1})");
     }
+
+    Ok(failures)
+}
+
+//
+// System integration tests
+//
+
+pub fn suspend_resume(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    if !shell.cmd("ls /sys/power")?.contains("pm_test") {
+        log::warn!(
+            "suspend_resume: Kernel has been compiled without CONFIG_PM_DEBUG, skipping test"
+        );
+        return Ok(0);
+    }
+
+    shell.cmd("echo core > /sys/power/pm_test")?;
+    shell.cmd("systemctl suspend")?;
+    // The shell will be unresponsive for around 8 seconds during suspend
+    thread::sleep(Duration::from_secs(10));
+    shell.cmd("echo none > /sys/power/pm_test")?;
+    // Wait for the PHY to come back up. This can be fairly short. We need to
+    // wait for the link to come up but there is only a brief interruption to
+    // the link so there should be no need for a new DHCP lease.
+    thread::sleep(Duration::from_secs(5));
+    failures += ping(shell, ipaddr)?;
+    failures += verify_log_messages(shell)?;
 
     Ok(failures)
 }

@@ -128,3 +128,17 @@ pub fn phy_quick_test(
 
     Ok(failures)
 }
+
+pub fn system_test(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    tests::wait_for_ipv4(shell, adapter)?;
+
+    let mut failures = 0;
+
+    failures += tests::suspend_resume(shell, ipaddr)?;
+
+    Ok(failures)
+}

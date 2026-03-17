@@ -44,6 +44,9 @@ enum Commands {
     /// PHY Auto-Negotiation testing covering only local advertisements
     PhyQuickTest(TestCli),
 
+    /// System integration testing (including suspend/resume tests)
+    SystemTest(TestCli),
+
     /// Run all tests that do not require the board to be rebooted.
     AllTests(TestCli),
 }
@@ -70,6 +73,7 @@ pub enum TestPlan {
     BandwidthTest,
     LatencyTest,
     PhyQuickTest,
+    SystemTest,
 }
 
 type TestPlanRunner = fn(&mut NativeExecutor, &str, &str) -> Result<u32, Error>;
@@ -82,6 +86,7 @@ impl TestPlan {
             Self::BandwidthTest => "Bandwidth tests",
             Self::LatencyTest => "Latency tests",
             Self::PhyQuickTest => "PHY quick auto-negotiation tests",
+            Self::SystemTest => "System integration tests",
         }
     }
 
@@ -92,6 +97,7 @@ impl TestPlan {
             Self::BandwidthTest => plans::bandwidth_test,
             Self::LatencyTest => plans::latency_test,
             Self::PhyQuickTest => plans::phy_quick_test,
+            Self::SystemTest => plans::system_test,
         }
     }
 }
@@ -183,6 +189,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
         TestPlan::BandwidthTest,
         TestPlan::LatencyTest,
         TestPlan::PhyQuickTest,
+        TestPlan::SystemTest,
     ];
 
     let mut shell = NativeExecutor::new();
@@ -254,6 +261,7 @@ fn app() -> Result<(), Error> {
         Commands::BandwidthTest(args) => run_test(args, TestPlan::BandwidthTest),
         Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
         Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),
+        Commands::SystemTest(args) => run_test(args, TestPlan::SystemTest),
         Commands::AllTests(args) => all_tests(args),
     };
 

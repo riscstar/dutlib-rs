@@ -50,6 +50,9 @@ enum Commands {
     /// PHY Auto-Negotiation testing covering only local advertisements
     PhyQuickTest(TestCli),
 
+    /// System integration testing (including suspend/resume tests)
+    SystemTest(TestCli),
+
     /// Run all tests that do not require the board to be rebooted.
     AllTests(TestCli),
 }
@@ -88,6 +91,7 @@ pub enum TestPlan {
     LatencyTest,
     PhyAnTest,
     PhyQuickTest,
+    SystemTest,
 }
 
 type TestPlanRunner = fn(&mut ReplSession<OsSession>, &str, &str) -> Result<u32, Error>;
@@ -101,6 +105,7 @@ impl TestPlan {
             Self::LatencyTest => "Latency tests",
             Self::PhyAnTest => "PHY auto-negotiation tests",
             Self::PhyQuickTest => "PHY quick auto-negotiation tests",
+            Self::SystemTest => "System integration tests",
         }
     }
 
@@ -112,6 +117,7 @@ impl TestPlan {
             Self::LatencyTest => plans::latency_test,
             Self::PhyAnTest => plans::phy_an_test,
             Self::PhyQuickTest => plans::phy_quick_test,
+            Self::SystemTest => plans::system_test,
         }
     }
 }
@@ -222,6 +228,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
         TestPlan::BandwidthTest,
         TestPlan::LatencyTest,
         TestPlan::PhyAnTest,
+        TestPlan::SystemTest,
     ];
 
     let mut board = DeviceUnderTest::new();
@@ -290,6 +297,7 @@ fn app() -> Result<(), Error> {
         Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
         Commands::PhyAnTest(args) => run_test(args, TestPlan::PhyAnTest),
         Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),
+        Commands::SystemTest(args) => run_test(args, TestPlan::SystemTest),
         Commands::AllTests(args) => all_tests(args),
     }
 }
