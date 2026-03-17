@@ -181,16 +181,17 @@ impl DeviceUnderTest {
 
         let lsmod = shell.cmd("lsmod")?;
 
-        // Check for incompatible module state
-        if module_name.contains("tc956x")
-            && lsmod.contains("tc956x")
-            && !lsmod.contains(module_name)
-        {
-            self.reboot(shell)?;
-            return self.console_with_module(module_name);
+        if !lsmod.contains(module_name) {
+            // Check for incompatible module state
+            if module_name.contains("tc956x") && lsmod.contains("tc956x") {
+                self.reboot(shell)?;
+                return self.console_with_module(module_name);
+            }
+
+            shell.cmd("dmesg -C")?;
+            shell.cmd(format!("modprobe {module_name}"))?;
         }
 
-        shell.cmd(format!("modprobe {module_name}"))?;
         Ok(shell)
     }
 

@@ -20,15 +20,16 @@ impl NativeExecutor {
     pub fn load_module(&mut self, module_name: &str) -> Result<(), Error> {
         let lsmod = self.cmd("lsmod")?;
 
-        // Check for incompatible module state
-        if module_name.contains("tc956x")
-            && lsmod.contains("tc956x")
-            && !lsmod.contains(module_name)
-        {
-            return Err(io::Error::other("Incorrect module is already loaded").into());
+        if !lsmod.contains(module_name) {
+            // Check for incompatible module state
+            if module_name.contains("tc956x") && lsmod.contains("tc956x") {
+                return Err(io::Error::other("Incorrect module is already loaded").into());
+            }
+
+            self.cmd("dmesg -C")?;
+            self.cmd(format!("modprobe {module_name}"))?;
         }
 
-        self.cmd(format!("modprobe {module_name}"))?;
         Ok(())
     }
 }

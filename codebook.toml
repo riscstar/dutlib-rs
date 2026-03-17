@@ -1,5 +1,6 @@
 words = [
     "bidir",
+    "dmesg",
     "dut",
     "dutlib",
     "ethtool",

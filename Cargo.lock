@@ -142,6 +142,7 @@ dependencies = [
  "env_logger",
  "expectrl",
  "log",
+ "regex",
  "serde",
  "serde_json",
 ]

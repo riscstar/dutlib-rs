@@ -1,6 +1,7 @@
-use std::{io, process::Command, thread, time::Duration};
+use std::{io, process::Command, sync::LazyLock, thread, time::Duration};
 
 use expectrl::Error;
+use regex::Regex;
 use serde::Deserialize;
 
 use crate::{CommandExecutor, plans};
@@ -293,6 +294,56 @@ pub fn iperf3_tx(
     } else {
         0
     })
+}
+
+/// Verify the log messages
+pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    // dwmac-tc956x 0001:05:00.1 enP1p5s0f1: PHY [stmmac-501:1c] driver [Qualcomm QCA8081] (irq=279)
+    static PHY_DRIVER_IRQ: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#": PHY \[(?P<address>[^\]]+)\] driver \[(?P<driver>[^\]]+)\] \((?P<irq>[^)]+)\)"#,
+        )
+        .unwrap()
+    });
+
+    let dmesg = shell.cmd("dmesg -c")?;
+
+    for ln in dmesg.lines() {
+        // Check that the PHY is not in polling mode
+        if let Some(caps) = PHY_DRIVER_IRQ.captures(ln) {
+            log::info!(
+                "PHY found on bus {}: driver {}, irq {}",
+                &caps["address"],
+                &caps["driver"],
+                &caps["irq"]
+            );
+
+            if caps["irq"].to_lowercase().contains("poll") {
+                failures += 1;
+            }
+        }
+
+        let lower = ln.to_lowercase();
+        if lower.contains("warn") || lower.contains("error") || lower.contains("bug") {
+            // In general warn/error/bug cause the test to fail... but
+            // there are a few things on the allowlist...
+
+            // Allow "error -ENODEV: MDIO bus (id: 1280) registration failed"
+            if ln.contains("error -ENODEV: MDIO bus") && ln.contains("registration failed") {
+                continue;
+            }
+
+            failures += 1;
+        }
+    }
+
+    if failures >= 1 {
+        log::info!("Kernel log review failed\n{dmesg}");
+    }
+
+    Ok(failures)
 }
 
 /// Transfer 1GiB of random data concurrently between partner and DUT and verify
