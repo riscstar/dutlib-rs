@@ -330,6 +330,26 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
             // In general warn/error/bug cause the test to fail... but
             // there are a few things on the allowlist...
 
+            // Bugs are bad, debugging is (usually) good
+            if !lower.contains("warn")
+                && !lower.contains("error")
+                && !lower.replace("debug", "").contains("bug")
+            {
+                continue;
+            }
+
+            // [  749.349882] pcieport 0001:00:00.0: AER: Correctable error message received from 0001:01:00.0
+            // [  749.360186] pcieport 0001:01:00.0: PCIe Bus Error: severity=Correctable, type=Data Link Layer, (Transmitter ID)
+            // [  749.372161] pcieport 0001:01:00.0:   device [1179:0623] error status/mask=00001000/00006000
+            // [  749.381840] pcieport 0001:01:00.0:    [12] Timeouts
+            if !lower.contains("warn")
+                && !lower.contains("bug")
+                && lower.contains("pcieport")
+                && (lower.contains("correctable") || lower.contains("error status/mask="))
+            {
+                continue;
+            }
+
             // Allow "error -ENODEV: MDIO bus (id: 1280) registration failed"
             if ln.contains("error -ENODEV: MDIO bus") && ln.contains("registration failed") {
                 continue;
