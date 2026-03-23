@@ -1283,7 +1283,11 @@ pub fn iperf3_x16_rx(
 // System integration tests
 //
 
-pub fn suspend_resume(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+pub fn suspend_resume(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
     let mut failures = 0;
 
     if !shell.cmd("ls /sys/power")?.contains("pm_test") {
@@ -1302,8 +1306,7 @@ pub fn suspend_resume(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<
     // wait for the link to come up but there is only a brief interruption to
     // the link so there should be no need for a new DHCP lease.
     thread::sleep(Duration::from_secs(5));
-    failures += ping(shell, ipaddr)?;
-    failures += verify_log_messages(shell)?;
+    failures += plans::phy_smoke_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }

@@ -138,7 +138,8 @@ pub fn system_test(
 
     let mut failures = 0;
 
-    failures += tests::suspend_resume(shell, ipaddr)?;
+    failures += tests::suspend_resume(shell, adapter, ipaddr)?;
+    failures += tests::suspend_resume(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }
