@@ -308,7 +308,7 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
         .unwrap()
     });
 
-    let dmesg = shell.cmd("dmesg -c")?;
+    let dmesg = shell.cmd("dmesg --color=never --read-clear")?;
 
     for ln in dmesg.lines() {
         // Check that the PHY is not in polling mode
