@@ -32,6 +32,7 @@ pub fn functional_test(
     failures += tests::scp_bidir(shell, ipaddr)?;
     failures += tests::scp_tx(shell, ipaddr)?;
     failures += tests::scp_rx(shell, ipaddr)?;
+    failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)
 }
@@ -54,6 +55,7 @@ pub fn bandwidth_test(
     failures += tests::iperf3_x16_bidir(shell, adapter, ipaddr)?;
     failures += tests::iperf3_x16_tx(shell, adapter, ipaddr)?;
     failures += tests::iperf3_x16_rx(shell, adapter, ipaddr)?;
+    failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)
 }
@@ -71,6 +73,7 @@ pub fn latency_test(
     failures += tests::ping_100ms(shell, ipaddr)?;
     failures += tests::ping_10ms(shell, ipaddr)?;
     failures += tests::ping_flood(shell, ipaddr)?;
+    failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)
 }
@@ -86,6 +89,7 @@ pub fn phy_smoke_test(
 
     failures += tests::ping(shell, ipaddr)?;
     failures += tests::iperf3_bidir(shell, adapter, ipaddr)?;
+    failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)
 }
@@ -106,6 +110,7 @@ pub fn phy_an_test(
     failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_10baset_full(shell, adapter, ipaddr)?;
+    failures += tests::verify_log_messages(shell)?;
 
     // Check that the previous tests didn't damage anything when returning to default
     failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr)?;
@@ -125,6 +130,7 @@ pub fn phy_quick_test(
     failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_all(shell, adapter, ipaddr)?;
+    failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)
 }
@@ -140,6 +146,7 @@ pub fn system_test(
 
     failures += tests::suspend_resume(shell, adapter, ipaddr)?;
     failures += tests::suspend_resume(shell, adapter, ipaddr)?;
+    failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)
 }
