@@ -829,7 +829,7 @@ fn iperf3_new_helper(
     ipaddr: &str,
     args: &str,
 ) -> Result<IperfResult, Error> {
-    let reply = shell.with_timeout_secs(35, |sh| {
+    let reply = shell.with_timeout_secs(45, |sh| {
         sh.cmd(&format!("iperf3 -c {ipaddr} -t 30 --json {args}"))
     })?;
 
@@ -855,7 +855,14 @@ pub fn iperf3_intervals_bidir(
     let speed_mbps = adapter_speed(shell, adapter);
 
     let mut failures = 0;
-    let tx_threshold = speed_mbps * 0.8;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  Mb/s        BW      BW * 0.95
+    // TX per interval  2339.5      94%     89%
+    // RX per interval  1099.5      44%     42%
+    // TX overall       2341.2      94%     89%
+    // RX overall       1561.6      62%     59%
+    let tx_threshold = speed_mbps * 0.89;
     let rx_threshold = speed_mbps * 0.6;
 
     for (i, (tx, rx)) in stats
@@ -907,7 +914,12 @@ pub fn iperf3_intervals_tx(
     let speed_mbps = adapter_speed(shell, adapter);
 
     let mut failures = 0;
-    let tx_threshold = speed_mbps * 0.8;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  Mb/s        BW      BW * 0.95
+    // TX per interval  2350.5      94%     89%
+    // TX overall       2348.4      94%     89%
+    let tx_threshold = speed_mbps * 0.89;
 
     for (i, tx) in stats
         .intervals
@@ -950,6 +962,11 @@ pub fn iperf3_intervals_rx(
     let speed_mbps = adapter_speed(shell, adapter);
 
     let mut failures = 0;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  Mb/s        BW      BW * 0.95
+    // RX per interval  126.1       5%      5%
+    // RX overall       136.3       5%      5%
     let rx_threshold = speed_mbps * 0.8;
 
     for (i, rx) in stats
@@ -1003,12 +1020,18 @@ pub fn iperf3_udp_bidir(
     }
 
     let mut failures = 0;
-    let threshold = 5.0;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  %       % * 1.05
+    // TX lost packets  5.8%    6.1%
+    // RX lost packets  4.2%    4.4%
+    let tx_threshold = 5.0;
+    let rx_threshold = 4.4;
 
     let rx = get_lost_percent(stats.end.streams[0].udp);
     let tx = get_lost_percent(stats.end.streams[1].udp);
 
-    if rx > threshold || tx > threshold {
+    if rx > rx_threshold || tx > tx_threshold {
         log::warn!("iperf3_udp_bidir: Packet loss too high: TX {tx:0.1}, RX {rx:0.1}");
         failures += 1;
     } else {
@@ -1034,6 +1057,11 @@ pub fn iperf3_udp_tx(
     }
 
     let mut failures = 0;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  %       % * 1.05
+    // TX lost packets  4.2%    4.4%
+    //let threshold = 4.4;
     let threshold = 5.0;
 
     let tx = get_lost_percent(stats.end.streams[0].udp);
@@ -1068,6 +1096,11 @@ pub fn iperf3_udp_rx(
     }
 
     let mut failures = 0;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  %       % * 1.05
+    // RX lost packets  0.4%    0.42%
+    //let threshold = 0.42;
     let threshold = 5.0;
 
     let rx = get_lost_percent(stats.end.streams[0].udp);
@@ -1092,9 +1125,15 @@ pub fn iperf3_x16_bidir(
     let speed_mbps = adapter_speed(shell, adapter);
 
     let mut failures = 0;
-    let tx_threshold = speed_mbps * 0.8;
-    let rx_threshold = speed_mbps * 0.6;
-    let stream_threshold = tx_threshold.min(rx_threshold) / 8.0;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  Mb/s        BW      BW * 0.95
+    // Per interval     176.3       56%     54%
+    // TX overall       2342.3      94%     89%
+    // RX overall       1541.8      62%     59%
+    let stream_threshold = (speed_mbps * 0.54) / 8.0;
+    let tx_threshold = speed_mbps * 0.89;
+    let rx_threshold = speed_mbps * 0.59;
 
     for (i, (sender, receiver)) in stats
         .end
@@ -1150,8 +1189,13 @@ pub fn iperf3_x16_tx(
     let speed_mbps = adapter_speed(shell, adapter);
 
     let mut failures = 0;
-    let tx_threshold = speed_mbps * 0.8;
-    let stream_threshold = tx_threshold / 16.0;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  Mb/s        BW      BW * 0.95
+    // Per interval     142.2       91%     86%
+    // TX overall       2351.0      94%     89%
+    let stream_threshold = (speed_mbps * 0.86) / 16.0;
+    let tx_threshold = speed_mbps * 0.89;
 
     for (i, (sender, receiver)) in stats
         .end
@@ -1195,8 +1239,13 @@ pub fn iperf3_x16_rx(
     let speed_mbps = adapter_speed(shell, adapter);
 
     let mut failures = 0;
+
+    // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
+    //                  Mb/s        BW      BW * 0.95
+    // Per interval     62.1        40%     38%
+    // RX overall       1167.6      47%     44%
+    let stream_threshold = (speed_mbps * 0.6) / 16.0;
     let rx_threshold = speed_mbps * 0.6;
-    let stream_threshold = rx_threshold / 16.0;
 
     for (i, (sender, receiver)) in stats
         .end
