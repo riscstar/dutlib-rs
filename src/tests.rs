@@ -338,6 +338,11 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
                 continue;
             }
 
+            // [   76.783004] platform sound: deferred probe pending: snd-sc8280xp: WSA Playback: error getting cpu dai name
+            if ln.contains("platform sound: deferred probe pending: snd-sc8280xp: WSA Playback: error getting cpu dai name") {
+                continue;
+            }
+
             // [  749.349882] pcieport 0001:00:00.0: AER: Correctable error message received from 0001:01:00.0
             // [  749.360186] pcieport 0001:01:00.0: PCIe Bus Error: severity=Correctable, type=Data Link Layer, (Transmitter ID)
             // [  749.372161] pcieport 0001:01:00.0:   device [1179:0623] error status/mask=00001000/00006000
@@ -355,6 +360,19 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
                 continue;
             }
 
+            // Vendor driver can emit any of the following:
+            // [   52.803491] tc956x_pci-eth 0001:05:00.0: Error: Module parameter tc956x_eth_ports_bdf not provided or
+            // 			value provided in module param not matching with the device BDF.
+            // 			Use the device number as 14 and set other associated module parameter values to default
+            // [   52.803607] tc956x_pci-eth 0001:05:00.0: tc956xmac_pci_probe: ERROR Invalid macX_interface parameter passed.
+            //          Restoring to default interface 1 for the device index: 14
+            if ln.contains("Error: Module parameter tc956x_eth_ports_bdf not provided")
+                || ln.contains("ERROR Invalid macX_interface parameter passed")
+            {
+                continue;
+            }
+
+            log::error!("Message triggered failures: {ln}");
             failures += 1;
         }
     }
