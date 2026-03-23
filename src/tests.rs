@@ -408,9 +408,8 @@ pub fn scp_bidir(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, 
 
         // Run the transfer
         sh.cmd(format!(
-            "scp urandom_tx.dat test@{ipaddr}: & scp test@{ipaddr}:urandom_rx.dat . "
+            "scp urandom_tx.dat test@{ipaddr}: & scp test@{ipaddr}:urandom_rx.dat .; wait"
         ))?;
-        sh.cmd("fg")?;
 
         // Collect the remaining checksums
         let my_sha256sum_rx = sh.cmd("sha256sum urandom_rx.dat")?;
