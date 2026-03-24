@@ -233,14 +233,34 @@ fn iperf3_helper(
     ))
 }
 
+pub fn iperf3_bidir_tuneable(
+    shell: &mut impl CommandExecutor,
+    ipaddr: &str,
+    tx_threshold: f64,
+    rx_threshold: f64,
+) -> Result<u32, Error> {
+    let (tx, rx) = iperf3_helper(shell, ipaddr, "--bidir")?;
+    log::info!("iperf3_bidir: TX is {tx:?}, RX is {rx:?}");
+
+    Ok(
+        if tx[0] < tx_threshold
+            || tx[1] < tx_threshold
+            || rx[0] < rx_threshold
+            || rx[1] < rx_threshold
+        {
+            log::warn!("iperf3_bidir: Network performance is too slow: tx {tx:?} rx {rx:?}");
+            1
+        } else {
+            0
+        },
+    )
+}
+
 pub fn iperf3_bidir(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    let (tx, rx) = iperf3_helper(shell, ipaddr, "--bidir")?;
-    log::info!("iperf3_bidir: TX is {tx:?}, RX is {rx:?}");
-
     let speed = adapter_speed(shell, adapter);
     let (tthresh, rthresh) = (
         speed * 0.7,
@@ -251,15 +271,7 @@ pub fn iperf3_bidir(
             speed * 0.7
         },
     );
-
-    Ok(
-        if tx[0] < tthresh || tx[1] < tthresh || rx[0] < rthresh || rx[1] < rthresh {
-            log::warn!("iperf3_bidir: Network performance is too slow: tx {tx:?} rx {rx:?}");
-            1
-        } else {
-            0
-        },
-    )
+    iperf3_bidir_tuneable(shell, ipaddr, tthresh, rthresh)
 }
 
 pub fn iperf3_rx(
@@ -357,6 +369,19 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
 
             // Allow "error -ENODEV: MDIO bus (id: 1280) registration failed"
             if ln.contains("error -ENODEV: MDIO bus") && ln.contains("registration failed") {
+                continue;
+            }
+
+            // The following are "normal" when an RB3gen2 boots:
+            // [    1.785316] geni_i2c 980000.i2c: Direct firmware load for qcom/qcs6490/qupv3fw.elf failed with error -2
+            // [    1.836510] remoteproc remoteproc1: Direct firmware load for qcom/qcs6490/adsp.mbn failed with error -2
+            // [    1.839334] remoteproc remoteproc3: Direct firmware load for qcom/qcs6490/cdsp.mbn failed with error -2
+            if ln.contains("Direct firmware load for qcom/qcs6490/qupv3fw.elf failed with error -2")
+                || ln
+                    .contains("Direct firmware load for qcom/qcs6490/adsp.mbn failed with error -2")
+                || ln
+                    .contains("Direct firmware load for qcom/qcs6490/cdsp.mbn failed with error -2")
+            {
                 continue;
             }
 
@@ -524,7 +549,7 @@ pub fn link_mode_and_partner_advertise_all(
         failures += 1;
     }
 
-    failures += plans::phy_smoke_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }
@@ -562,7 +587,7 @@ fn link_partner_advertise_helper(
         log::info!("Link negotiated at {speed}Mb/s");
     }
 
-    let smoke_test_result = plans::phy_smoke_test(shell, adapter, ipaddr);
+    let smoke_test_result = plans::quick_test(shell, adapter, ipaddr);
 
     // restore the link partner's advertisement and make sure we get the adapter back
     link_partner_ethtool("-s <ADAPTER> advertise 0xffffffffffffffff")?;
@@ -670,7 +695,7 @@ fn link_mode_advertise_helper(
         log::info!("Link negotiated at {speed}Mb/s");
     }
 
-    let smoke_test_result = plans::phy_smoke_test(shell, adapter, ipaddr);
+    let smoke_test_result = plans::quick_test(shell, adapter, ipaddr);
 
     // restore the link partner's advertisement and make sure we get the adapter back
     let _ = shell.cmd(&format!(
@@ -739,7 +764,7 @@ pub fn link_mode_advertise_all(
         failures += 1;
     }
 
-    failures += plans::phy_smoke_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }
@@ -1010,7 +1035,7 @@ pub fn iperf3_udp_bidir(
     let stats = iperf3_new_helper(
         shell,
         ipaddr,
-        &format!("-i 5 --udp --bitrate {bitrate}M --bidir"),
+        &format!("-i 30 --udp --bitrate {bitrate}M --bidir"),
     )?;
 
     if stats.end.streams.len() != 2 {
@@ -1048,7 +1073,7 @@ pub fn iperf3_udp_tx(
     let speed_mbps = adapter_speed(shell, adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
-    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 5 --udp --bitrate {bitrate}M"))?;
+    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --udp --bitrate {bitrate}M"))?;
 
     if stats.end.streams.len() != 1 {
         log::error!("Unexpected reply from iperf3");
@@ -1086,7 +1111,7 @@ pub fn iperf3_udp_rx(
     let stats = iperf3_new_helper(
         shell,
         ipaddr,
-        &format!("-i 5 --udp --bitrate {bitrate}M -R"),
+        &format!("-i 30 --udp --bitrate {bitrate}M -R"),
     )?;
 
     if stats.end.streams.len() != 1 {
@@ -1305,7 +1330,29 @@ pub fn suspend_resume(
     // wait for the link to come up but there is only a brief interruption to
     // the link so there should be no need for a new DHCP lease.
     thread::sleep(Duration::from_secs(5));
-    failures += plans::phy_smoke_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(shell, adapter, ipaddr)?;
+
+    Ok(failures)
+}
+
+pub fn disable_checksum_offload(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    ipaddr: &str,
+) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    shell.cmd("ethtool -K enP1p5s0f1 tx off rx off")?;
+
+    // This is like plans::quick_test() but has a very relaxed pass criteria
+    // since there's little point in performance tuning with offload disabled
+    failures += ping(shell, ipaddr)?;
+    let speed = adapter_speed(shell, adapter);
+    let (tx_thresh, rx_thresh) = (speed * 0.2, speed * 0.2);
+    failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
+
+    shell.cmd("ethtool -K enP1p5s0f1 tx on rx on")?;
+    failures += plans::quick_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
 }

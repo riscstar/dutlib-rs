@@ -78,7 +78,7 @@ pub fn latency_test(
     Ok(failures)
 }
 
-pub fn phy_smoke_test(
+pub fn quick_test(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
@@ -146,6 +146,7 @@ pub fn system_test(
 
     failures += tests::suspend_resume(shell, adapter, ipaddr)?;
     failures += tests::suspend_resume(shell, adapter, ipaddr)?;
+    failures += tests::disable_checksum_offload(shell, adapter, ipaddr)?;
     failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)
