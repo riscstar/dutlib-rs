@@ -15,6 +15,7 @@ pub fn smoke_test(
     failures += tests::iperf3_bidir(shell, adapter, ipaddr)?;
     failures += tests::iperf3_tx(shell, adapter, ipaddr)?;
     failures += tests::iperf3_rx(shell, adapter, ipaddr)?;
+    failures += tests::ethtool_selftest(shell, adapter)?;
     failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)

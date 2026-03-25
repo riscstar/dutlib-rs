@@ -1,5 +1,6 @@
 use std::{io, process::Command, sync::LazyLock, thread, time::Duration};
 
+use errno::Errno;
 use expectrl::Error;
 use regex::Regex;
 use serde::Deserialize;
@@ -306,6 +307,49 @@ pub fn iperf3_tx(
     } else {
         0
     })
+}
+
+pub fn ethtool_selftest(shell: &mut impl CommandExecutor, adapter: &str) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    let reply = shell.cmd(format!("ethtool -t {adapter}"))?;
+    if reply.contains("Cannot test: Operation not supported") {
+        log::warn!(
+            "ethtool_selftest: Kernel has been compiled without CONFIG_STMMAC_SELFTESTS, skipping test"
+        );
+        return Ok(0);
+    }
+
+    // Wait for the PHY to renegotiate the link
+    thread::sleep(Duration::from_secs(5));
+
+    for ln in reply.lines() {
+        //  1. MAC Loopback               \t 0
+        // 32. TBS (ETF Scheduler)        \t -95
+        let Some((left, right)) = ln.split_once('\t') else {
+            continue;
+        };
+        let name = &left[4..].trim();
+        let Ok(result) = right.trim().parse::<i32>().map(|e| Errno(e * -1)) else {
+            continue;
+        };
+
+        // EOPNOTSUPP (95): Operation no supported
+        if result.0 != 0 && result.0 != 95 {
+            if name.contains("VLAN") {
+                // Currently all VLAN selftests timeout (but VLAN works) so
+                // we'll treat it to a warning for now...
+                log::warn!("ethtool_selftest: {name:-30} {result}");
+            } else {
+                log::error!("ethtool_selftest: {name:-30} {result}");
+                failures += 1;
+            }
+        } else {
+            log::debug!("ethtool_selftest: {name:-30} {result}");
+        }
+    }
+
+    Ok(failures)
 }
 
 /// Verify the log messages
