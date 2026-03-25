@@ -26,7 +26,6 @@ impl NativeExecutor {
                 return Err(io::Error::other("Incorrect module is already loaded").into());
             }
 
-            self.cmd("dmesg -C")?;
             self.cmd(format!("modprobe {module_name}"))?;
         }
 

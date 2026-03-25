@@ -397,6 +397,15 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
                 continue;
             }
 
+            // QLI1.7 emits the following errors during boot:
+            // [    4.632429] [     T68] cpufreq-dt: probe of cpufreq-dt failed with error -17
+            // [    5.635194] [    T340] mcp251xfd spi3.0 can0: MCP2517FD rev0.0 (-RX_INT -PLL +MAB_NO_WARN +CRC_REG +CRC_RX +CRC_TX +ECC -HD o:0.00MHz c:40.00MHz m:10.00MHz rs:10.00MHz es:0.00MHz rf:10.00MHz ef:0.00MHz) successfully initialized.
+            if ln.contains("cpufreq-dt: probe of cpufreq-dt failed with error -17")
+                || ln.contains("+MAB_NO_WARN")
+            {
+                continue;
+            }
+
             log::error!("Message triggered failures: {ln}");
             failures += 1;
         }
