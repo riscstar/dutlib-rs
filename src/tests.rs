@@ -1351,6 +1351,12 @@ pub fn disable_checksum_offload(
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
+    let reply = shell.cmd("ethtool -k enP1p5s0f1 | grep '^[tr]x-checksumming'")?;
+    if !reply.contains("tx-checksumming: on") || !reply.contains("rx-checksumming: on") {
+        log::error!("disable_checksum_offload: Checksum offloading is not enabled by default");
+        failures += 1;
+    }
+
     shell.cmd("ethtool -K enP1p5s0f1 tx off rx off")?;
 
     // This is like plans::quick_test() but has a very relaxed pass criteria
