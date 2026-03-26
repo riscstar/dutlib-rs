@@ -68,7 +68,7 @@ pub struct Config {
 
     pub console: Option<String>,
     pub power_cycle: Option<String>,
-    pub remote_adapter: Option<String>,
+    pub partner_adapter: Option<String>,
 }
 
 pub fn read_config() -> Result<Config, io::Error> {

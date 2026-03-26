@@ -94,25 +94,25 @@ pub fn quick_test(
 pub fn phy_an_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let adapter = &config.adapter;
     let ipaddr = &config.ipaddr;
-    let remote_adapter = config.remote_adapter.as_deref();
+    let partner_adapter = config.partner_adapter.as_deref();
 
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
 
-    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, remote_adapter)?;
+    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
     failures +=
-        tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr, remote_adapter)?;
+        tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr, partner_adapter)?;
     failures +=
-        tests::link_partner_advertise_100baset_full(shell, adapter, ipaddr, remote_adapter)?;
-    failures += tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr, remote_adapter)?;
+        tests::link_partner_advertise_100baset_full(shell, adapter, ipaddr, partner_adapter)?;
+    failures += tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr, partner_adapter)?;
     failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_10baset_full(shell, adapter, ipaddr)?;
     failures += tests::verify_log_messages(shell)?;
 
     // Check that the previous tests didn't damage anything when returning to default
-    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, remote_adapter)?;
+    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
 
     Ok(failures)
 }

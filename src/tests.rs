@@ -525,14 +525,14 @@ pub fn scp_tx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Err
 /// Run a ethtool command on the link partner.
 ///
 /// This can be used to restrict the advertised link modes.
-pub fn link_partner_ethtool(args: &str, remote_adapter: Option<&str>) -> Result<(), Error> {
-    let Some(remote_adapter) = remote_adapter else {
+pub fn link_partner_ethtool(args: &str, partner_adapter: Option<&str>) -> Result<(), Error> {
+    let Some(partner_adapter) = partner_adapter else {
         return Err(io::Error::other("TOML config error: remote_adapater is not set").into());
     };
 
     let output = Command::new("sudo")
         .arg("ethtool")
-        .args(args.replace("<ADAPTER>", remote_adapter).split_whitespace())
+        .args(args.replace("<ADAPTER>", partner_adapter).split_whitespace())
         .output()?;
 
     if output.status.success() {
@@ -547,13 +547,13 @@ pub fn link_mode_and_partner_advertise_all(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    remote_adapter: Option<&str>,
+    partner_adapter: Option<&str>,
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
     let mut partner = SudoExecutor::new();
-    let Some(partner_adapter) = remote_adapter else {
-        return Err(io::Error::other("TOML config error: remote_adapter is not set").into());
+    let Some(partner_adapter) = partner_adapter else {
+        return Err(io::Error::other("TOML config error: partner_adapter is not set").into());
     };
 
     // advertise everything
@@ -576,15 +576,15 @@ fn link_partner_advertise_helper(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    remote_adapter: Option<&str>,
+    partner_adapter: Option<&str>,
     advertisement: u64,
     expected_speed: u32,
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
     let mut partner = SudoExecutor::new();
-    let Some(partner_adapter) = remote_adapter else {
-        return Err(io::Error::other("TOML config error: remote_adapter is not set").into());
+    let Some(partner_adapter) = partner_adapter else {
+        return Err(io::Error::other("TOML config error: partner_adapter is not set").into());
     };
 
     // get the initial adapter info
@@ -662,9 +662,9 @@ pub fn link_partner_advertise_1000baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    remote_adapter: Option<&str>,
+    partner_adapter: Option<&str>,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, remote_adapter, 0x0020, 1000)
+    link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0020, 1000)
 }
 
 /// Provoke the link partner to advertise 100baseT/Full and verify correct
@@ -673,9 +673,9 @@ pub fn link_partner_advertise_100baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    remote_adapter: Option<&str>,
+    partner_adapter: Option<&str>,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, remote_adapter, 0x0008, 100)
+    link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0008, 100)
 }
 
 /// Provoke the link partner to advertise 10baseT/Full and verify correct
@@ -684,9 +684,9 @@ pub fn link_partner_advertise_10baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    remote_adapter: Option<&str>,
+    partner_adapter: Option<&str>,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, remote_adapter, 0x0002, 10)
+    link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0002, 10)
 }
 
 fn link_mode_advertise_helper(
