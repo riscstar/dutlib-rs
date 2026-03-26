@@ -6,7 +6,7 @@ use std::{
 use clap::{Parser, Subcommand, ValueEnum};
 use expectrl::Error;
 
-use dutlib::{CommandExecutor, native::NativeExecutor, plans, tests};
+use dutlib::{CommandExecutor, Config, native::NativeExecutor, plans, read_config, tests};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -76,7 +76,7 @@ pub enum TestPlan {
     SystemTest,
 }
 
-type TestPlanRunner = fn(&mut NativeExecutor, &str, &str) -> Result<u32, Error>;
+type TestPlanRunner = fn(&Config, &mut NativeExecutor) -> Result<u32, Error>;
 
 impl TestPlan {
     fn name(&self) -> &'static str {
@@ -129,7 +129,7 @@ pub struct CycleCli {
     plan: TestPlan,
 }
 
-fn cycle(args: CycleCli) -> Result<(), Error> {
+fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
     let mut good = 0;
     let mut bad = 0;
 
@@ -138,7 +138,7 @@ fn cycle(args: CycleCli) -> Result<(), Error> {
     shell.load_module(&args.module)?;
 
     for cycle in 0..args.cycles {
-        match args.plan.runner()(&mut shell, &args.name, &args.ipaddr)? {
+        match args.plan.runner()(&config, &mut shell)? {
             0 => good += 1,
             n => {
                 bad += 1;
@@ -162,13 +162,13 @@ fn cycle(args: CycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test(args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
+fn run_test(config: Config, args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&args.module)?;
 
     let name = test_plan.name();
-    match test_plan.runner()(&mut shell, &args.name, &args.ipaddr) {
+    match test_plan.runner()(&config, &mut shell) {
         Ok(0) => {
             log::info!("{name} completed successfully");
             Ok(())
@@ -182,7 +182,7 @@ fn run_test(args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
     }
 }
 
-fn all_tests(args: TestCli) -> Result<(), Error> {
+fn all_tests(config: Config, args: TestCli) -> Result<(), Error> {
     let tests = [
         TestPlan::SmokeTest,
         TestPlan::FunctionalTest,
@@ -199,7 +199,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
     let mut failures = 0;
 
     for (plan, name) in tests.iter().map(|p| (p.runner(), p.name())) {
-        let result = plan(&mut shell, &args.name, &args.ipaddr)?;
+        let result = plan(&config, &mut shell)?;
         match result {
             0 => {
                 log::info!("{name} completed successfully");
@@ -254,15 +254,17 @@ fn app() -> Result<(), Error> {
         None
     };
 
+    let config = read_config()?;
+
     let result = match cli.command {
-        Commands::SmokeTest(args) => run_test(args, TestPlan::SmokeTest),
-        Commands::Cycle(args) => cycle(args),
-        Commands::FunctionalTest(args) => run_test(args, TestPlan::FunctionalTest),
-        Commands::BandwidthTest(args) => run_test(args, TestPlan::BandwidthTest),
-        Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
-        Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),
-        Commands::SystemTest(args) => run_test(args, TestPlan::SystemTest),
-        Commands::AllTests(args) => all_tests(args),
+        Commands::SmokeTest(args) => run_test(config, args, TestPlan::SmokeTest),
+        Commands::Cycle(args) => cycle(config, args),
+        Commands::FunctionalTest(args) => run_test(config, args, TestPlan::FunctionalTest),
+        Commands::BandwidthTest(args) => run_test(config, args, TestPlan::BandwidthTest),
+        Commands::LatencyTest(args) => run_test(config, args, TestPlan::LatencyTest),
+        Commands::PhyQuickTest(args) => run_test(config, args, TestPlan::PhyQuickTest),
+        Commands::SystemTest(args) => run_test(config, args, TestPlan::SystemTest),
+        Commands::AllTests(args) => all_tests(config, args),
     };
 
     if let Some(settings) = printk {

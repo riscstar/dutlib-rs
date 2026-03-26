@@ -5,7 +5,7 @@ use expectrl::{Eof, Error, Expect, Session};
 use crate::{CommandExecutor, SessionExt};
 
 pub struct NativeExecutor {
-    timeout: Option<Duration>,
+    pub timeout: Option<Duration>,
     available: Option<String>,
 }
 
@@ -84,6 +84,38 @@ impl CommandExecutor for NativeExecutor {
         self.timeout = Some(Duration::from_secs(duration));
         let result = work(self);
         self.timeout = None;
+        result
+    }
+}
+
+pub struct SudoExecutor {
+    executor: NativeExecutor,
+}
+
+impl SudoExecutor {
+    pub fn new() -> Self {
+        Self {
+            executor: NativeExecutor::new(),
+        }
+    }
+}
+
+impl CommandExecutor for SudoExecutor {
+    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
+        self.executor.cmd(format!("sudo {}", cmd.as_ref()))
+    }
+
+    fn try_read_to_string(&mut self) -> Option<String> {
+        self.executor.try_read_to_string()
+    }
+
+    fn with_timeout_secs<F, R>(&mut self, duration: u64, work: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.executor.timeout = Some(Duration::from_secs(duration));
+        let result = work(self);
+        self.executor.timeout = None;
         result
     }
 }

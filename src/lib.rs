@@ -1,8 +1,14 @@
-use std::io::Read;
+use std::{
+    fs,
+    io::{self, Read},
+    path::Path,
+};
 
 use expectrl::{Error, Session, process::NonBlocking};
+use serde::{Deserialize, Serialize};
 
 pub mod dut;
+pub mod ethtool;
 pub mod native;
 pub mod plans;
 pub mod tests;
@@ -52,4 +58,26 @@ impl<P, S: Read + NonBlocking> SessionExt for Session<P, S> {
             return None;
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Config {
+    pub ipaddr: String,
+    pub adapter: String,
+    pub module: String,
+
+    pub console: Option<String>,
+    pub power_cycle: Option<String>,
+    pub remote_adapter: Option<String>,
+}
+
+pub fn read_config() -> Result<Config, io::Error> {
+    let home =
+        std::env::var_os("HOME").ok_or_else(|| io::Error::other("No HOME in environment"))?;
+
+    let config_file = Path::new(&home).join(".dutlib").join("rb3gen2.toml");
+    let config = fs::read_to_string(config_file)?;
+    let config = toml::from_str(&config).map_err(|e| io::Error::other(format!("{e}")))?;
+
+    Ok(config)
 }

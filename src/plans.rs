@@ -1,12 +1,11 @@
 use expectrl::Error;
 
-use crate::{CommandExecutor, tests};
+use crate::{CommandExecutor, Config, tests};
 
-pub fn smoke_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn smoke_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
@@ -21,11 +20,10 @@ pub fn smoke_test(
     Ok(failures)
 }
 
-pub fn functional_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn functional_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
@@ -38,11 +36,10 @@ pub fn functional_test(
     Ok(failures)
 }
 
-pub fn bandwidth_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn bandwidth_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
@@ -61,11 +58,10 @@ pub fn bandwidth_test(
     Ok(failures)
 }
 
-pub fn latency_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn latency_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
@@ -95,35 +91,36 @@ pub fn quick_test(
     Ok(failures)
 }
 
-pub fn phy_an_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn phy_an_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+    let remote_adapter = config.remote_adapter.as_deref();
+
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
 
-    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr)?;
-    failures += tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr)?;
-    failures += tests::link_partner_advertise_100baset_full(shell, adapter, ipaddr)?;
-    failures += tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr)?;
+    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, remote_adapter)?;
+    failures +=
+        tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr, remote_adapter)?;
+    failures +=
+        tests::link_partner_advertise_100baset_full(shell, adapter, ipaddr, remote_adapter)?;
+    failures += tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr, remote_adapter)?;
     failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_10baset_full(shell, adapter, ipaddr)?;
     failures += tests::verify_log_messages(shell)?;
 
     // Check that the previous tests didn't damage anything when returning to default
-    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr)?;
+    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, remote_adapter)?;
 
     Ok(failures)
 }
 
-pub fn phy_quick_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn phy_quick_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
@@ -136,12 +133,11 @@ pub fn phy_quick_test(
     Ok(failures)
 }
 
-pub fn system_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    tests::wait_for_ipv4(shell, adapter)?;
+pub fn system_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+
+    tests::wait_for_ipv4(shell, &config.adapter)?;
 
     let mut failures = 0;
 

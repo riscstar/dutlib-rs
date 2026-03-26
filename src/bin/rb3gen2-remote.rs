@@ -6,7 +6,7 @@ use std::{
 use clap::{Parser, Subcommand, ValueEnum};
 use expectrl::{Error, repl::ReplSession, session::OsSession};
 
-use dutlib::{CommandExecutor, dut::DeviceUnderTest, plans, tests};
+use dutlib::{CommandExecutor, Config, dut::DeviceUnderTest, plans, read_config, tests};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -22,6 +22,18 @@ struct Cli {
     /// Increase verbosity
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
+    /// Name of the network driver module to be loaded
+    #[arg(short, long)]
+    module: Option<String>,
+
+    /// Name of the device (as it appears in `ip addr`)
+    #[arg(short, long)]
+    name: Option<String>,
+
+    /// IP address (or name) of a machine running `iperf3 -s`
+    #[arg(short, long)]
+    ipaddr: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -69,19 +81,7 @@ fn reboot(_args: RebootCli) -> Result<(), Error> {
 }
 
 #[derive(Debug, Parser)]
-pub struct TestCli {
-    /// Name of the network driver module to be loaded
-    #[arg(short, long, default_value = "dwmac_tc956x")]
-    module: String,
-
-    /// Name of the device (as it appears in `ip addr`)
-    #[arg(short, long, default_value = "enP1p5s0f1")]
-    name: String,
-
-    /// IP address (or name) of a machine running `iperf3 -s`
-    #[arg(short, long, default_value = "192.168.10.2")]
-    ipaddr: String,
-}
+pub struct TestCli {}
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum TestPlan {
@@ -94,7 +94,7 @@ pub enum TestPlan {
     SystemTest,
 }
 
-type TestPlanRunner = fn(&mut ReplSession<OsSession>, &str, &str) -> Result<u32, Error>;
+type TestPlanRunner = fn(&Config, &mut ReplSession<OsSession>) -> Result<u32, Error>;
 
 impl TestPlan {
     fn name(&self) -> &'static str {
@@ -153,7 +153,7 @@ pub struct BootCycleCli {
     plan: TestPlan,
 }
 
-fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
+fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     let mut board = DeviceUnderTest::new();
 
     let mut good = 0;
@@ -172,7 +172,7 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
             remaining_this_boot -= 1;
         }
 
-        match args.plan.runner()(&mut console, &args.name, &args.ipaddr) {
+        match args.plan.runner()(&config, &mut console) {
             Ok(0) => good += 1,
             Ok(n) => {
                 bad += 1;
@@ -201,13 +201,13 @@ fn boot_cycle(args: BootCycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test(args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
+fn run_test(config: Config, _args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
     let mut board = DeviceUnderTest::new();
-    let mut console = board.console_with_module(&args.module)?;
+    let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
 
     let name = test_plan.name();
-    match test_plan.runner()(&mut console, &args.name, &args.ipaddr) {
+    match test_plan.runner()(&config, &mut console) {
         Ok(0) => {
             log::info!("{name} completed successfully");
             Ok(())
@@ -221,7 +221,7 @@ fn run_test(args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
     }
 }
 
-fn all_tests(args: TestCli) -> Result<(), Error> {
+fn all_tests(config: Config, _args: TestCli) -> Result<(), Error> {
     let tests = [
         TestPlan::SmokeTest,
         TestPlan::FunctionalTest,
@@ -232,13 +232,13 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
     ];
 
     let mut board = DeviceUnderTest::new();
-    let mut console = board.console_with_module(&args.module)?;
+    let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
 
     let mut failures = 0;
 
     for (plan, name) in tests.iter().map(|p| (p.runner(), p.name())) {
-        let result = plan(&mut console, &args.name, &args.ipaddr);
+        let result = plan(&config, &mut console);
         match result {
             Ok(0) => {
                 log::info!("{name} completed successfully");
@@ -255,7 +255,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
                 // Now let's try to recover the system so we can run the next
                 // set of tests
                 board.crashed(console.into_session());
-                console = board.console_with_module(&args.module)?;
+                console = board.console_with_module(&config.module)?;
             }
         }
     }
@@ -269,7 +269,7 @@ fn all_tests(args: TestCli) -> Result<(), Error> {
 }
 
 fn app() -> Result<(), Error> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     let levels = [
         "error",
@@ -288,17 +288,28 @@ fn app() -> Result<(), Error> {
     );
     env_logger::Builder::from_env(env).init();
 
+    let mut config = read_config()?;
+    if let Some(ipaddr) = cli.ipaddr.take() {
+        config.ipaddr = ipaddr;
+    }
+    if let Some(adapter) = cli.ipaddr.take() {
+        config.adapter = adapter;
+    }
+    if let Some(module) = cli.module.take() {
+        config.module = module;
+    }
+
     match cli.command {
         Commands::Reboot(args) => reboot(args),
-        Commands::SmokeTest(args) => run_test(args, TestPlan::SmokeTest),
-        Commands::BootCycle(args) => boot_cycle(args),
-        Commands::FunctionalTest(args) => run_test(args, TestPlan::FunctionalTest),
-        Commands::BandwidthTest(args) => run_test(args, TestPlan::BandwidthTest),
-        Commands::LatencyTest(args) => run_test(args, TestPlan::LatencyTest),
-        Commands::PhyAnTest(args) => run_test(args, TestPlan::PhyAnTest),
-        Commands::PhyQuickTest(args) => run_test(args, TestPlan::PhyQuickTest),
-        Commands::SystemTest(args) => run_test(args, TestPlan::SystemTest),
-        Commands::AllTests(args) => all_tests(args),
+        Commands::SmokeTest(args) => run_test(config, args, TestPlan::SmokeTest),
+        Commands::BootCycle(args) => boot_cycle(config, args),
+        Commands::FunctionalTest(args) => run_test(config, args, TestPlan::FunctionalTest),
+        Commands::BandwidthTest(args) => run_test(config, args, TestPlan::BandwidthTest),
+        Commands::LatencyTest(args) => run_test(config, args, TestPlan::LatencyTest),
+        Commands::PhyAnTest(args) => run_test(config, args, TestPlan::PhyAnTest),
+        Commands::PhyQuickTest(args) => run_test(config, args, TestPlan::PhyQuickTest),
+        Commands::SystemTest(args) => run_test(config, args, TestPlan::SystemTest),
+        Commands::AllTests(args) => all_tests(config, args),
     }
 }
 

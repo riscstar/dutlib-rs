@@ -31,3 +31,15 @@ Finally, try:
 
 Zealous adopters could also choose to extract `192.168.10.2` into a TOML
 configuration file, giving greater flexibility for step #1 above.
+
+
+## Additional configuration for remote runners
+
+The test suite needs to make local changes to your networking configuration.
+To make this work robustly configure `sudo` to allow `ethtool` and `ip`
+to be run without requiring a password.
+
+~~~
+%sudo ALL=(ALL) NOPASSWD: /usr/sbin/ethtool
+%sudo ALL=(ALL) NOPASSWD: /usr/sbin/ip
+~~~

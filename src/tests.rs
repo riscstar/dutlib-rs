@@ -5,7 +5,12 @@ use expectrl::Error;
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::{CommandExecutor, plans};
+use crate::{
+    CommandExecutor,
+    ethtool::{self, AdapterInfo},
+    native::SudoExecutor,
+    plans,
+};
 
 /// Show what drivers have bound to the adapter
 pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
@@ -32,66 +37,6 @@ pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<()
 
     log::info!("driver_info: {bus_info} is bound to {eth_driver}/{bus_driver}");
     Ok(())
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct AdapterInfo {
-    pub speed: Option<u32>,
-}
-
-/// Gather information about the adapter
-pub fn adapter_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<AdapterInfo, Error> {
-    let reply = shell.cmd(&format!("ethtool --json {adapter}"))?;
-    let json = serde_json::from_str::<serde_json::Value>(&reply).map_err(|e| {
-        log::error!("{e}");
-        io::Error::other("Cannot parse JSON from ethtool")
-    })?;
-
-    let speed = json[0]["speed"].as_i64().map(|s| s as u32);
-
-    Ok(AdapterInfo { speed })
-}
-
-/// Get the adapter speed (or 2500.0 is the speed cannot be read for any reason)
-pub fn adapter_speed(shell: &mut impl CommandExecutor, adapter: &str) -> f64 {
-    match adapter_info(shell, adapter) {
-        Ok(AdapterInfo { speed: Some(speed) }) => speed as f64,
-        _ => 2500.0,
-    }
-}
-
-/// Wait for the adapter to detect a link and report the link speed
-pub fn wait_for_adapter_info(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-) -> Result<Option<AdapterInfo>, Error> {
-    for _ in 0..10 {
-        let info = adapter_info(shell, adapter)?;
-        if info.speed.is_some() {
-            return Ok(Some(info));
-        }
-
-        thread::sleep(Duration::from_secs(1));
-    }
-
-    Ok(None)
-}
-
-/// Helper function to send an ethtool command that provokes phy renegotiation
-/// and wait for link up.
-pub fn ethtool_and_wait_for_adapter_info(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    cmd: &str,
-) -> Result<Option<AdapterInfo>, Error> {
-    shell.cmd(format!("ethtool {cmd}").replace("<ADAPTER>", adapter))?;
-
-    // We assume the above command will cause the PHY to renegotiate. Let's
-    // leave a moment for that process to *start* (with a little margin to
-    // avoid spamming the logs)
-    thread::sleep(Duration::from_secs(3));
-
-    wait_for_adapter_info(shell, adapter)
 }
 
 /// Wait for the specified IP address to be assigned to the board
@@ -279,7 +224,7 @@ pub fn iperf3_bidir(
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    let speed = adapter_speed(shell, adapter);
+    let speed = ethtool::get_speed(shell, adapter);
     let (tthresh, rthresh) = (
         speed * 0.7,
         if speed >= 2500.0 {
@@ -299,7 +244,7 @@ pub fn iperf3_rx(
 ) -> Result<u32, Error> {
     let bench = iperf3_helper(shell, ipaddr, "-R")?.0;
     log::info!("iperf3_rx: RX is {bench:?}");
-    let threshold = adapter_speed(shell, adapter) * 0.8;
+    let threshold = ethtool::get_speed(shell, adapter) * 0.8;
 
     Ok(if bench[0] < threshold || bench[1] < threshold {
         log::warn!("iperf3_rx: Network performance is too slow {bench:?}\n");
@@ -316,7 +261,7 @@ pub fn iperf3_tx(
 ) -> Result<u32, Error> {
     let bench = iperf3_helper(shell, ipaddr, "")?.0;
     log::info!("iperf3_tx: TX performance is {bench:?}");
-    let threshold = adapter_speed(shell, adapter) * 0.8;
+    let threshold = ethtool::get_speed(shell, adapter) * 0.8;
 
     Ok(if bench[0] < threshold || bench[1] < threshold {
         log::warn!("iperf3_tx: Network performance is too slow {bench:?}\n");
@@ -554,7 +499,7 @@ pub fn scp_rx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Err
     })
 }
 
-/// Transfer 1GiB of random data from DUT to partner and verify sha256sum
+/// Transfer 1GiB of random dethtoolata from DUT to partner and verify sha256sum
 /// matches.
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
@@ -580,13 +525,14 @@ pub fn scp_tx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Err
 /// Run a ethtool command on the link partner.
 ///
 /// This can be used to restrict the advertised link modes.
-pub fn link_partner_ethtool(args: &str) -> Result<(), Error> {
+pub fn link_partner_ethtool(args: &str, remote_adapter: Option<&str>) -> Result<(), Error> {
+    let Some(remote_adapter) = remote_adapter else {
+        return Err(io::Error::other("TOML config error: remote_adapater is not set").into());
+    };
+
     let output = Command::new("sudo")
         .arg("ethtool")
-        .args(
-            args.replace("<ADAPTER>", "enxccbabda84b23")
-                .split_whitespace(),
-        )
+        .args(args.replace("<ADAPTER>", remote_adapter).split_whitespace())
         .output()?;
 
     if output.status.success() {
@@ -601,16 +547,18 @@ pub fn link_mode_and_partner_advertise_all(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
+    remote_adapter: Option<&str>,
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
+    let mut partner = SudoExecutor::new();
+    let Some(partner_adapter) = remote_adapter else {
+        return Err(io::Error::other("TOML config error: remote_adapter is not set").into());
+    };
+
     // advertise everything
-    link_partner_ethtool("-s <ADAPTER> advertise 0xffffffffffffffff")?;
-    let _ = shell.cmd(&format!(
-        "ethtool -s {adapter} advertise 0xffffffffffffffff"
-    ))?;
-    thread::sleep(Duration::from_secs(2));
-    let adapter_info = wait_for_adapter_info(shell, adapter)?;
+    ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
+    let adapter_info = ethtool::advertise(shell, adapter, u64::MAX)?;
 
     if let Some(AdapterInfo { speed: Some(speed) }) = adapter_info {
         log::info!("Link negotiated at {speed}Mb/s");
@@ -628,13 +576,19 @@ fn link_partner_advertise_helper(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    advertisement: &str,
+    remote_adapter: Option<&str>,
+    advertisement: u64,
     expected_speed: u32,
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
+    let mut partner = SudoExecutor::new();
+    let Some(partner_adapter) = remote_adapter else {
+        return Err(io::Error::other("TOML config error: remote_adapter is not set").into());
+    };
+
     // get the initial adapter info
-    let Some(initial_info) = wait_for_adapter_info(shell, adapter)? else {
+    let Some(initial_info) = ethtool::wait_link_up(shell, adapter)? else {
         log::error!("Failed to read adapter info");
         return Ok(1);
     };
@@ -648,23 +602,23 @@ fn link_partner_advertise_helper(
     }
 
     // change the link partner's advertisement and give time for the link to stop
-    link_partner_ethtool(&format!("-s <ADAPTER> advertise {advertisement}"))?;
-    thread::sleep(Duration::from_secs(2));
+    ethtool::advertise(&mut partner, partner_adapter, advertisement)?;
 
     // wait for the new adapter info
-    let test_info_result = wait_for_adapter_info(shell, adapter);
+    let test_info_result = ethtool::wait_link_up(shell, adapter);
     if let Ok(Some(AdapterInfo { speed: Some(speed) })) = test_info_result {
         log::info!("Link negotiated at {speed}Mb/s");
     }
 
+    thread::sleep(Duration::from_secs(2));
     let smoke_test_result = plans::quick_test(shell, adapter, ipaddr);
 
     // restore the link partner's advertisement and make sure we get the adapter back
-    link_partner_ethtool("-s <ADAPTER> advertise 0xffffffffffffffff")?;
-    thread::sleep(Duration::from_secs(2));
-    let restored_info = wait_for_adapter_info(shell, adapter)?;
+    ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
+    let restored_info = ethtool::wait_link_up(shell, adapter)?;
 
     // Make sure "something" works after restoring the defaults
+    thread::sleep(Duration::from_secs(2));
     failures += ping(shell, ipaddr)?;
 
     // deferred error handling (to ensure the advertisement was restored)
@@ -708,8 +662,9 @@ pub fn link_partner_advertise_1000baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
+    remote_adapter: Option<&str>,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, "0x0020", 1000)
+    link_partner_advertise_helper(shell, adapter, ipaddr, remote_adapter, 0x0020, 1000)
 }
 
 /// Provoke the link partner to advertise 100baseT/Full and verify correct
@@ -718,8 +673,9 @@ pub fn link_partner_advertise_100baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
+    remote_adapter: Option<&str>,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, "0x0008", 100)
+    link_partner_advertise_helper(shell, adapter, ipaddr, remote_adapter, 0x0008, 100)
 }
 
 /// Provoke the link partner to advertise 10baseT/Full and verify correct
@@ -728,21 +684,22 @@ pub fn link_partner_advertise_10baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
+    remote_adapter: Option<&str>,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, "0x0002", 10)
+    link_partner_advertise_helper(shell, adapter, ipaddr, remote_adapter, 0x0002, 10)
 }
 
 fn link_mode_advertise_helper(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    advertisement: &str,
+    advertisement: u64,
     expected_speed: u32,
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
     // get the initial adapter info
-    let Some(initial_info) = wait_for_adapter_info(shell, adapter)? else {
+    let Some(initial_info) = ethtool::wait_link_up(shell, adapter)? else {
         log::error!("Failed to read adapter info");
         return Ok(1);
     };
@@ -755,12 +712,8 @@ fn link_mode_advertise_helper(
         return Ok(0);
     }
 
-    // change our own advertisement and give time for the link to stop
-    let _ = shell.cmd(&format!("ethtool -s {adapter} advertise {advertisement}"))?;
-    thread::sleep(Duration::from_secs(2));
-
-    // wait for the new adapter info
-    let test_info_result = wait_for_adapter_info(shell, adapter);
+    // change our own advertisement
+    let test_info_result = ethtool::advertise(shell, adapter, advertisement);
     if let Ok(Some(AdapterInfo { speed: Some(speed) })) = test_info_result {
         log::info!("Link negotiated at {speed}Mb/s");
     }
@@ -768,11 +721,7 @@ fn link_mode_advertise_helper(
     let smoke_test_result = plans::quick_test(shell, adapter, ipaddr);
 
     // restore the link partner's advertisement and make sure we get the adapter back
-    let _ = shell.cmd(&format!(
-        "ethtool -s {adapter} advertise 0xffffffffffffffff"
-    ))?;
-    thread::sleep(Duration::from_secs(2));
-    let restored_info = wait_for_adapter_info(shell, adapter)?;
+    let restored_info = ethtool::advertise(shell, adapter, u64::MAX)?;
 
     // Make sure "something" works after restoring the defaults
     failures += ping(shell, ipaddr)?;
@@ -821,11 +770,7 @@ pub fn link_mode_advertise_all(
     let mut failures = 0;
 
     // advertise everything
-    let _ = shell.cmd(&format!(
-        "ethtool -s {adapter} advertise 0xffffffffffffffff"
-    ))?;
-    thread::sleep(Duration::from_secs(2));
-    let adapter_info = wait_for_adapter_info(shell, adapter)?;
+    let adapter_info = ethtool::advertise(shell, adapter, u64::MAX)?;
 
     if let Some(AdapterInfo { speed: Some(speed) }) = adapter_info {
         log::info!("Link negotiated at {speed}Mb/s");
@@ -845,7 +790,7 @@ pub fn link_mode_advertise_1000baset_full(
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    link_mode_advertise_helper(shell, adapter, ipaddr, "0x002f", 1000)
+    link_mode_advertise_helper(shell, adapter, ipaddr, 0x003f, 1000)
 }
 
 /// Advertise (up to) 100baseT/Full and verify correct negotiation.
@@ -854,7 +799,7 @@ pub fn link_mode_advertise_100baset_full(
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    link_mode_advertise_helper(shell, adapter, ipaddr, "0x000f", 100)
+    link_mode_advertise_helper(shell, adapter, ipaddr, 0x000f, 100)
 }
 
 /// Advertise (up to) 10baseT/Full and verify correct negotiation.
@@ -863,7 +808,7 @@ pub fn link_mode_advertise_10baset_full(
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    link_mode_advertise_helper(shell, adapter, ipaddr, "0x0003", 10)
+    link_mode_advertise_helper(shell, adapter, ipaddr, 0x0003, 10)
 }
 
 //
@@ -946,7 +891,7 @@ pub fn iperf3_intervals_bidir(
 ) -> Result<u32, Error> {
     let stats = iperf3_new_helper(shell, ipaddr, "-i 5 --bidir")?;
 
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
 
     let mut failures = 0;
 
@@ -1005,7 +950,7 @@ pub fn iperf3_intervals_tx(
 ) -> Result<u32, Error> {
     let stats = iperf3_new_helper(shell, ipaddr, "-i 5")?;
 
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
 
     let mut failures = 0;
 
@@ -1053,7 +998,7 @@ pub fn iperf3_intervals_rx(
 ) -> Result<u32, Error> {
     let stats = iperf3_new_helper(shell, ipaddr, "-i 5 -R")?;
 
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
 
     let mut failures = 0;
 
@@ -1099,7 +1044,7 @@ pub fn iperf3_udp_bidir(
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
     let stats = iperf3_new_helper(
@@ -1140,7 +1085,7 @@ pub fn iperf3_udp_tx(
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
     let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --udp --bitrate {bitrate}M"))?;
@@ -1175,7 +1120,7 @@ pub fn iperf3_udp_rx(
     adapter: &str,
     ipaddr: &str,
 ) -> Result<u32, Error> {
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
     let stats = iperf3_new_helper(
@@ -1216,7 +1161,7 @@ pub fn iperf3_x16_bidir(
 ) -> Result<u32, Error> {
     let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 8 --bidir"))?;
 
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
 
     let mut failures = 0;
 
@@ -1280,7 +1225,7 @@ pub fn iperf3_x16_tx(
 ) -> Result<u32, Error> {
     let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 16"))?;
 
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
 
     let mut failures = 0;
 
@@ -1330,7 +1275,7 @@ pub fn iperf3_x16_rx(
 ) -> Result<u32, Error> {
     let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 16 -R"))?;
 
-    let speed_mbps = adapter_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, adapter);
 
     let mut failures = 0;
 
@@ -1423,7 +1368,7 @@ pub fn disable_checksum_offload(
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
     failures += ping(shell, ipaddr)?;
-    let speed = adapter_speed(shell, adapter);
+    let speed = ethtool::get_speed(shell, adapter);
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
 
@@ -1453,7 +1398,7 @@ pub fn disable_tso(
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
     failures += ping(shell, ipaddr)?;
-    let speed = adapter_speed(shell, adapter);
+    let speed = ethtool::get_speed(shell, adapter);
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
 
@@ -1485,11 +1430,11 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
 
     // If EEE in inactive then let's try check 1000baseT/Full instead
     if og_status == "inactive" {
-        ethtool_and_wait_for_adapter_info(shell, adapter, "-s <ADAPTER> advertise 0x20")?;
+        ethtool::cmd_and_wait_link_up(shell, adapter, "-s <ADAPTER> advertise 0x20")?;
         let status = ethtool_show_eee(shell, adapter)?;
         if status != "active" {
             log::error!("check_eee: EEE at 1000baseT/Full is {status}");
-            ethtool_and_wait_for_adapter_info(
+            ethtool::cmd_and_wait_link_up(
                 shell,
                 adapter,
                 "-s <ADAPTER> advertise 0xffffffffffffffff",
@@ -1507,8 +1452,8 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
     // Note that we sometimes get an additional link down/up as our
     // partner reacts to the renegotiation so we end up waiting for the adapter
     // twice.
-    ethtool_and_wait_for_adapter_info(shell, adapter, "--set-eee <ADAPTER> eee off")?;
-    wait_for_adapter_info(shell, adapter)?;
+    ethtool::cmd_and_wait_link_up(shell, adapter, "--set-eee <ADAPTER> eee off")?;
+    ethtool::wait_link_up(shell, adapter)?;
     let status = ethtool_show_eee(shell, adapter)?;
     if status != "disabled" {
         log::error!("check_eee: EEE is {status} (expected disabled)");
@@ -1519,7 +1464,7 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
     failures += plans::quick_test(shell, adapter, ipaddr)?;
 
     // Re-enable EEE
-    ethtool_and_wait_for_adapter_info(shell, adapter, "--set-eee <ADAPTER> eee on")?;
+    ethtool::cmd_and_wait_link_up(shell, adapter, "--set-eee <ADAPTER> eee on")?;
     let status = ethtool_show_eee(shell, adapter)?;
     if status != "active" {
         log::error!("check_eee: EEE is {status} (expected active)");
@@ -1528,11 +1473,7 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
 
     // Restore the link speed (if needed)
     if og_status == "inactive" {
-        ethtool_and_wait_for_adapter_info(
-            shell,
-            adapter,
-            "-s <ADAPTER> advertise 0xffffffffffffffff",
-        )?;
+        ethtool::cmd_and_wait_link_up(shell, adapter, "-s <ADAPTER> advertise 0xffffffffffffffff")?;
     }
 
     Ok(failures)
