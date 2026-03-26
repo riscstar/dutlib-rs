@@ -1412,13 +1412,13 @@ pub fn disable_checksum_offload(
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
-    let reply = shell.cmd("ethtool -k enP1p5s0f1 | grep '^[tr]x-checksumming'")?;
+    let reply = shell.cmd(format!("ethtool -k {adapter} | grep '^[tr]x-checksumming'"))?;
     if !reply.contains("tx-checksumming: on") || !reply.contains("rx-checksumming: on") {
         log::error!("disable_checksum_offload: Checksum offloading is not enabled by default");
         failures += 1;
     }
 
-    shell.cmd("ethtool -K enP1p5s0f1 tx off rx off")?;
+    shell.cmd(format!("ethtool -K {adapter} tx off rx off"))?;
 
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
@@ -1427,7 +1427,7 @@ pub fn disable_checksum_offload(
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
 
-    shell.cmd("ethtool -K enP1p5s0f1 tx on rx on")?;
+    shell.cmd(format!("ethtool -K {adapter} tx on rx on"))?;
     failures += plans::quick_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
@@ -1440,13 +1440,15 @@ pub fn disable_tso(
 ) -> Result<u32, Error> {
     let mut failures = 0;
 
-    let reply = shell.cmd("ethtool -k enP1p5s0f1 | grep '^tcp-segmentation-offload'")?;
+    let reply = shell.cmd(format!(
+        "ethtool -k {adapter} | grep '^tcp-segmentation-offload'"
+    ))?;
     if !reply.contains("tcp-segmentation-offload: on") {
         log::error!("disable_checksum_offload: TSO is not enabled by default");
         failures += 1;
     }
 
-    shell.cmd("ethtool -K enP1p5s0f1 tso off")?;
+    shell.cmd(format!("ethtool -K {adapter} tso off"))?;
 
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
@@ -1455,7 +1457,7 @@ pub fn disable_tso(
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
 
-    shell.cmd("ethtool -K enP1p5s0f1 tso on")?;
+    shell.cmd(format!("ethtool -K {adapter} tso on"))?;
     failures += plans::quick_test(shell, adapter, ipaddr)?;
 
     Ok(failures)
