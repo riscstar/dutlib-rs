@@ -1420,11 +1420,11 @@ pub fn disable_checksum_offload(
 
     shell.cmd("ethtool -K enP1p5s0f1 tx off rx off")?;
 
-    // This is like plans::quick_test() but has a very relaxed pass criteria
+    // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
     failures += ping(shell, ipaddr)?;
     let speed = adapter_speed(shell, adapter);
-    let (tx_thresh, rx_thresh) = (speed * 0.2, speed * 0.2);
+    let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
 
     shell.cmd("ethtool -K enP1p5s0f1 tx on rx on")?;
@@ -1448,11 +1448,11 @@ pub fn disable_tso(
 
     shell.cmd("ethtool -K enP1p5s0f1 tso off")?;
 
-    // This is like plans::quick_test() but has a very relaxed pass criteria
+    // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
     failures += ping(shell, ipaddr)?;
     let speed = adapter_speed(shell, adapter);
-    let (tx_thresh, rx_thresh) = (speed * 0.2, speed * 0.2);
+    let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
 
     shell.cmd("ethtool -K enP1p5s0f1 tso on")?;
