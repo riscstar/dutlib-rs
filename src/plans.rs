@@ -149,6 +149,7 @@ pub fn system_test(
     failures += tests::suspend_resume(shell, adapter, ipaddr)?;
     failures += tests::disable_checksum_offload(shell, adapter, ipaddr)?;
     failures += tests::disable_tso(shell, adapter, ipaddr)?;
+    failures += tests::eee(shell, adapter, ipaddr)?;
     failures += tests::verify_log_messages(shell)?;
 
     Ok(failures)

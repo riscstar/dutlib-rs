@@ -65,16 +65,33 @@ pub fn wait_for_adapter_info(
     shell: &mut impl CommandExecutor,
     adapter: &str,
 ) -> Result<Option<AdapterInfo>, Error> {
-    for _ in 0..6 {
+    for _ in 0..10 {
         let info = adapter_info(shell, adapter)?;
         if info.speed.is_some() {
             return Ok(Some(info));
         }
 
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_secs(1));
     }
 
     Ok(None)
+}
+
+/// Helper function to send an ethtool command that provokes phy renegotiation
+/// and wait for link up.
+pub fn ethtool_and_wait_for_adapter_info(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    cmd: &str,
+) -> Result<Option<AdapterInfo>, Error> {
+    shell.cmd(format!("ethtool {cmd}").replace("<ADAPTER>", adapter))?;
+
+    // We assume the above command will cause the PHY to renegotiate. Let's
+    // leave a moment for that process to *start* (with a little margin to
+    // avoid spamming the logs)
+    thread::sleep(Duration::from_secs(3));
+
+    wait_for_adapter_info(shell, adapter)
 }
 
 /// Wait for the specified IP address to be assigned to the board
@@ -1440,6 +1457,81 @@ pub fn disable_tso(
 
     shell.cmd("ethtool -K enP1p5s0f1 tso on")?;
     failures += plans::quick_test(shell, adapter, ipaddr)?;
+
+    Ok(failures)
+}
+
+pub fn ethtool_show_eee(shell: &mut impl CommandExecutor, adapter: &str) -> Result<String, Error> {
+    let reply = shell.cmd(format!("ethtool --json --show-eee {adapter}"))?;
+    let json = serde_json::from_str::<serde_json::Value>(&reply).map_err(|e| {
+        log::error!("{e}");
+        io::Error::other("Cannot parse JSON from ethtool")
+    })?;
+
+    let status = json[0]["status"].as_str().unwrap_or("invalid");
+    Ok(status.to_string())
+}
+
+pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    let og_status = ethtool_show_eee(shell, adapter)?;
+    if og_status != "active" && og_status != "inactive" {
+        log::error!("check_eee: EEE at default speed is {og_status}");
+        return Ok(1);
+    }
+
+    // If EEE in inactive then let's try check 1000baseT/Full instead
+    if og_status == "inactive" {
+        ethtool_and_wait_for_adapter_info(shell, adapter, "-s <ADAPTER> advertise 0x20")?;
+        let status = ethtool_show_eee(shell, adapter)?;
+        if status != "active" {
+            log::error!("check_eee: EEE at 1000baseT/Full is {status}");
+            ethtool_and_wait_for_adapter_info(
+                shell,
+                adapter,
+                "-s <ADAPTER> advertise 0xffffffffffffffff",
+            )?;
+            return Ok(1);
+        }
+
+        // We *don't* test everything still works here because 1000baseT/Full
+        // is tested as part of the PHY auto-negotiation tests so, providing
+        // EEE is on by default, we've already done smoke testing in that mode
+    }
+
+    // Disable EEE and check is has been acted on.
+    //
+    // Note that we sometimes get an additional link down/up as our
+    // partner reacts to the renegotiation so we end up waiting for the adapter
+    // twice.
+    ethtool_and_wait_for_adapter_info(shell, adapter, "--set-eee <ADAPTER> eee off")?;
+    wait_for_adapter_info(shell, adapter)?;
+    let status = ethtool_show_eee(shell, adapter)?;
+    if status != "disabled" {
+        log::error!("check_eee: EEE is {status} (expected disabled)");
+        failures += 1;
+    }
+
+    // Check everything still works
+    failures += plans::quick_test(shell, adapter, ipaddr)?;
+
+    // Re-enable EEE
+    ethtool_and_wait_for_adapter_info(shell, adapter, "--set-eee <ADAPTER> eee on")?;
+    let status = ethtool_show_eee(shell, adapter)?;
+    if status != "active" {
+        log::error!("check_eee: EEE is {status} (expected active)");
+        failures += 1;
+    }
+
+    // Restore the link speed (if needed)
+    if og_status == "inactive" {
+        ethtool_and_wait_for_adapter_info(
+            shell,
+            adapter,
+            "-s <ADAPTER> advertise 0xffffffffffffffff",
+        )?;
+    }
 
     Ok(failures)
 }
