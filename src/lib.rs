@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod dut;
 pub mod ethtool;
+pub mod ip;
 pub mod native;
 pub mod plans;
 pub mod tests;
@@ -60,15 +61,33 @@ impl<P, S: Read + NonBlocking> SessionExt for Session<P, S> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    /// IP address to launch tests against. This IP address must respond to ping
+    /// and be running both sshd and iperf3.
     pub ipaddr: String,
+
+    /// Name of the network adapter under test.
     pub adapter: String,
+
+    /// Name of the kernel module that must be loaded.
     pub module: String,
 
-    pub console: Option<String>,
-    pub power_cycle: Option<String>,
-    pub partner_adapter: Option<String>,
+    /// Command to connect to the serial port of the device-under-test.
+    /// This is mandatory for remote tests and optional (unused) for local tests.
+    #[serde(default)]
+    pub console: String,
+
+    /// Command to reset the device-under-test if the console becomes
+    /// unresponsive. Optional and only required if automatic reboot during
+    /// boot cycle testing is needed.
+    #[serde(default)]
+    pub power_cycle: String,
+
+    /// Name of the network adapter of the link partner. Only used for remote
+    /// tests.
+    #[serde(default)]
+    pub partner_adapter: String,
 }
 
 pub fn read_config() -> Result<Config, io::Error> {

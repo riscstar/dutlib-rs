@@ -29,59 +29,52 @@ struct Cli {
 
     /// Name of the device (as it appears in `ip addr`)
     #[arg(short, long)]
-    name: Option<String>,
-
-    /// IP address (or name) of a machine running `iperf3 -s`
-    #[arg(short, long)]
-    ipaddr: Option<String>,
+    adapter: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Reboot the target (using the least aggressive means necessary)
-    Reboot(RebootCli),
+    Reboot,
 
     /// Run a simple smoke test
-    SmokeTest(TestCli),
+    SmokeTest,
 
     /// Boot cycling test (subset of smoke test) to estimate boot reliability
     BootCycle(BootCycleCli),
 
     /// Functional testing (inc. data integrity)
-    FunctionalTest(TestCli),
+    FunctionalTest,
 
     /// Bandwidth testing
-    BandwidthTest(TestCli),
+    BandwidthTest,
 
     /// Latency testing (using ping)
-    LatencyTest(TestCli),
+    LatencyTest,
 
     /// PHY Auto-Negotiation testing
-    PhyAnTest(TestCli),
+    PhyAnTest,
 
     /// PHY Auto-Negotiation testing covering only local advertisements
-    PhyQuickTest(TestCli),
+    PhyQuickTest,
 
     /// System integration testing (including suspend/resume tests)
-    SystemTest(TestCli),
+    SystemTest,
+
+    /// Run tests that require the partner to be configures (requires sudo prep)
+    PartnerTest,
 
     /// Run all tests that do not require the board to be rebooted.
-    AllTests(TestCli),
+    AllTests,
 }
 
-#[derive(Debug, Parser)]
-pub struct RebootCli {}
-
-fn reboot(_args: RebootCli) -> Result<(), Error> {
-    let mut board = DeviceUnderTest::new();
+fn reboot(config: Config) -> Result<(), Error> {
+    let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     let mut console = board.console()?;
     console.cmd("reboot")?;
 
     Ok(())
 }
-
-#[derive(Debug, Parser)]
-pub struct TestCli {}
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum TestPlan {
@@ -92,6 +85,7 @@ pub enum TestPlan {
     PhyAnTest,
     PhyQuickTest,
     SystemTest,
+    PartnerTest,
 }
 
 type TestPlanRunner = fn(&Config, &mut ReplSession<OsSession>) -> Result<u32, Error>;
@@ -106,6 +100,7 @@ impl TestPlan {
             Self::PhyAnTest => "PHY auto-negotiation tests",
             Self::PhyQuickTest => "PHY quick auto-negotiation tests",
             Self::SystemTest => "System integration tests",
+            Self::PartnerTest => "Partner tests",
         }
     }
 
@@ -118,6 +113,7 @@ impl TestPlan {
             Self::PhyAnTest => plans::phy_an_test,
             Self::PhyQuickTest => plans::phy_quick_test,
             Self::SystemTest => plans::system_test,
+            Self::PartnerTest => plans::partner_test,
         }
     }
 }
@@ -154,7 +150,7 @@ pub struct BootCycleCli {
 }
 
 fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
-    let mut board = DeviceUnderTest::new();
+    let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
 
     let mut good = 0;
     let mut bad = 0;
@@ -201,8 +197,8 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test(config: Config, _args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
-    let mut board = DeviceUnderTest::new();
+fn run_test(config: Config, test_plan: TestPlan) -> Result<(), Error> {
+    let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
 
@@ -221,7 +217,7 @@ fn run_test(config: Config, _args: TestCli, test_plan: TestPlan) -> Result<(), E
     }
 }
 
-fn all_tests(config: Config, _args: TestCli) -> Result<(), Error> {
+fn all_tests(config: Config) -> Result<(), Error> {
     let tests = [
         TestPlan::SmokeTest,
         TestPlan::FunctionalTest,
@@ -229,9 +225,10 @@ fn all_tests(config: Config, _args: TestCli) -> Result<(), Error> {
         TestPlan::LatencyTest,
         TestPlan::PhyAnTest,
         TestPlan::SystemTest,
+        TestPlan::PartnerTest,
     ];
 
-    let mut board = DeviceUnderTest::new();
+    let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
 
@@ -275,7 +272,7 @@ fn app() -> Result<(), Error> {
         "error",
         "warn",
         "info,dutlib=warn",
-        "info,dutlib::dut=warn",
+        "info,dutlib::dut=warn,dutlib::native=warn",
         "info", // default
         "debug",
         "trace",
@@ -289,10 +286,7 @@ fn app() -> Result<(), Error> {
     env_logger::Builder::from_env(env).init();
 
     let mut config = read_config()?;
-    if let Some(ipaddr) = cli.ipaddr.take() {
-        config.ipaddr = ipaddr;
-    }
-    if let Some(adapter) = cli.ipaddr.take() {
+    if let Some(adapter) = cli.adapter.take() {
         config.adapter = adapter;
     }
     if let Some(module) = cli.module.take() {
@@ -300,16 +294,17 @@ fn app() -> Result<(), Error> {
     }
 
     match cli.command {
-        Commands::Reboot(args) => reboot(args),
-        Commands::SmokeTest(args) => run_test(config, args, TestPlan::SmokeTest),
+        Commands::Reboot => reboot(config),
+        Commands::SmokeTest => run_test(config, TestPlan::SmokeTest),
         Commands::BootCycle(args) => boot_cycle(config, args),
-        Commands::FunctionalTest(args) => run_test(config, args, TestPlan::FunctionalTest),
-        Commands::BandwidthTest(args) => run_test(config, args, TestPlan::BandwidthTest),
-        Commands::LatencyTest(args) => run_test(config, args, TestPlan::LatencyTest),
-        Commands::PhyAnTest(args) => run_test(config, args, TestPlan::PhyAnTest),
-        Commands::PhyQuickTest(args) => run_test(config, args, TestPlan::PhyQuickTest),
-        Commands::SystemTest(args) => run_test(config, args, TestPlan::SystemTest),
-        Commands::AllTests(args) => all_tests(config, args),
+        Commands::FunctionalTest => run_test(config, TestPlan::FunctionalTest),
+        Commands::BandwidthTest => run_test(config, TestPlan::BandwidthTest),
+        Commands::LatencyTest => run_test(config, TestPlan::LatencyTest),
+        Commands::PhyAnTest => run_test(config, TestPlan::PhyAnTest),
+        Commands::PhyQuickTest => run_test(config, TestPlan::PhyQuickTest),
+        Commands::SystemTest => run_test(config, TestPlan::SystemTest),
+        Commands::PartnerTest => run_test(config, TestPlan::PartnerTest),
+        Commands::AllTests => all_tests(config),
     }
 }
 

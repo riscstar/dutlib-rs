@@ -61,6 +61,10 @@ pub fn cmd_and_wait_link_up(
     // avoid spamming the logs)
     thread::sleep(Duration::from_secs(3));
 
+    wait_link_up(shell, adapter)?;
+
+    // This is a workaround to link "ping/pong" seen with I226 adapters
+    thread::sleep(Duration::from_secs(2));
     wait_link_up(shell, adapter)
 }
 

@@ -4,7 +4,12 @@ use expectrl::{
     session::{OsProcess, OsSession, OsStream},
     stream::log::LogStream,
 };
-use std::{io::Stdout, process::Command, thread, time::Duration};
+use std::{
+    io::{self, Stdout},
+    process::Command,
+    thread,
+    time::Duration,
+};
 
 use crate::{CommandExecutor, SessionExt};
 
@@ -70,27 +75,43 @@ pub type OsLogSession = Session<OsProcess, LogStream<OsStream, Stdout>>;
 
 pub struct DeviceUnderTest {
     state: MachineState,
+    console: String,
+    power_cycle: String,
 }
 
 impl DeviceUnderTest {
-    pub fn new() -> Self {
+    pub fn new(console: &str, power_cycle: &str) -> Self {
         Self {
             state: MachineState::Booted,
+            console: console.to_string(),
+            power_cycle: power_cycle.to_string(),
         }
     }
 
     pub fn console(&mut self) -> Result<ReplSession<OsSession>, Error> {
         log::info!("Connecting to console ({:?})", self.state);
         if self.state == MachineState::Crashed {
-            let mut cmd = Command::new("iot-power-cycle");
-            cmd.arg("rb3gen2");
-            let output = cmd.output()?;
-            log::debug!("Power-cycle: {output:?}");
+            let mut iter = self.power_cycle.split_ascii_whitespace();
+            if let Some(first) = iter.next() {
+                let mut cmd = Command::new(first);
+                cmd.args(iter);
+                let output = cmd.output()?;
+                log::debug!("Power-cycle: {output:?}");
+            } else {
+                return Err(
+                    io::Error::other("TOML configuration error: power_cycle is not set").into(),
+                );
+            };
         }
 
-        let mut cmd = Command::new("ssh");
-        cmd.args("-t walnut picocom -b 115200 /dev/serial/by-id/usb-Prolific_Technology_Inc._Prolific_PL2303GD_USB_Serial_COM_Port_DAAOb119D16-if00".split_whitespace());
-        let mut uart = Session::spawn(cmd)?;
+        let mut iter = self.console.split_ascii_whitespace();
+        let mut uart = if let Some(first) = iter.next() {
+            let mut cmd = Command::new(first);
+            cmd.args(iter);
+            Session::spawn(cmd)?
+        } else {
+            return Err(io::Error::other("TOML configuration error: console is not set").into());
+        };
 
         // Error handling will try to reboot the target if possible but also
         // implements direct exit for permanent failures.

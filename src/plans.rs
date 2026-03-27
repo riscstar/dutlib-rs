@@ -94,25 +94,28 @@ pub fn quick_test(
 pub fn phy_an_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let adapter = &config.adapter;
     let ipaddr = &config.ipaddr;
-    let partner_adapter = config.partner_adapter.as_deref();
+    let partner_adapter = &config.partner_adapter;
 
     tests::wait_for_ipv4(shell, adapter)?;
 
     let mut failures = 0;
 
-    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
+    failures +=
+        tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
     failures +=
         tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr, partner_adapter)?;
     failures +=
         tests::link_partner_advertise_100baset_full(shell, adapter, ipaddr, partner_adapter)?;
-    failures += tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr, partner_adapter)?;
+    failures +=
+        tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr, partner_adapter)?;
     failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
     failures += tests::link_mode_advertise_10baset_full(shell, adapter, ipaddr)?;
     failures += tests::verify_log_messages(shell)?;
 
     // Check that the previous tests didn't damage anything when returning to default
-    failures += tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
+    failures +=
+        tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
 
     Ok(failures)
 }
@@ -147,6 +150,19 @@ pub fn system_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     failures += tests::disable_tso(shell, adapter, ipaddr)?;
     failures += tests::eee(shell, adapter, ipaddr)?;
     failures += tests::verify_log_messages(shell)?;
+
+    Ok(failures)
+}
+
+pub fn partner_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    tests::wait_for_ipv4(shell, &config.adapter)?;
+
+    let mut failures = 0;
+
+    failures += tests::mtu(config, shell)?;
+    failures += tests::vlan_smoke_test(config, shell)?;
+    failures += tests::ptp_receiver(config, shell)?;
+    failures += tests::ptp_transmitter(config, shell)?;
 
     Ok(failures)
 }

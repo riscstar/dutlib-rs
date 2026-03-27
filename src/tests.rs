@@ -6,8 +6,9 @@ use regex::Regex;
 use serde::Deserialize;
 
 use crate::{
-    CommandExecutor,
+    CommandExecutor, Config,
     ethtool::{self, AdapterInfo},
+    ip,
     native::SudoExecutor,
     plans,
 };
@@ -70,12 +71,16 @@ struct PingStats {
     //mdev: f64,
 }
 
+fn ping_raw(shell: &mut impl CommandExecutor, ipaddr: &str, args: &str) -> Result<String, Error> {
+    shell.with_timeout_secs(15, |sh| sh.cmd(&format!("ping {ipaddr} {args}")))
+}
+
 fn ping_helper_with_stats(
     shell: &mut impl CommandExecutor,
     ipaddr: &str,
     args: &str,
 ) -> Result<Option<PingStats>, Error> {
-    let reply = shell.with_timeout_secs(15, |sh| sh.cmd(&format!("ping {ipaddr} {args}")))?;
+    let reply = ping_raw(shell, ipaddr, args)?;
 
     if !reply.contains(" 0% packet loss") {
         return Ok(None);
@@ -125,7 +130,7 @@ pub fn ping_helper(
             1
         }
         None => {
-            log::warn!("ping: Could not ping {ipaddr}");
+            log::error!("ping: Could not ping {ipaddr}");
             1
         }
     })
@@ -532,7 +537,10 @@ pub fn link_partner_ethtool(args: &str, partner_adapter: Option<&str>) -> Result
 
     let output = Command::new("sudo")
         .arg("ethtool")
-        .args(args.replace("<ADAPTER>", partner_adapter).split_whitespace())
+        .args(
+            args.replace("<ADAPTER>", partner_adapter)
+                .split_whitespace(),
+        )
         .output()?;
 
     if output.status.success() {
@@ -547,14 +555,10 @@ pub fn link_mode_and_partner_advertise_all(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    partner_adapter: Option<&str>,
+    partner_adapter: &str,
 ) -> Result<u32, Error> {
     let mut failures = 0;
-
     let mut partner = SudoExecutor::new();
-    let Some(partner_adapter) = partner_adapter else {
-        return Err(io::Error::other("TOML config error: partner_adapter is not set").into());
-    };
 
     // advertise everything
     ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
@@ -576,16 +580,12 @@ fn link_partner_advertise_helper(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    partner_adapter: Option<&str>,
+    partner_adapter: &str,
     advertisement: u64,
     expected_speed: u32,
 ) -> Result<u32, Error> {
     let mut failures = 0;
-
     let mut partner = SudoExecutor::new();
-    let Some(partner_adapter) = partner_adapter else {
-        return Err(io::Error::other("TOML config error: partner_adapter is not set").into());
-    };
 
     // get the initial adapter info
     let Some(initial_info) = ethtool::wait_link_up(shell, adapter)? else {
@@ -662,7 +662,7 @@ pub fn link_partner_advertise_1000baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    partner_adapter: Option<&str>,
+    partner_adapter: &str,
 ) -> Result<u32, Error> {
     link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0020, 1000)
 }
@@ -673,7 +673,7 @@ pub fn link_partner_advertise_100baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    partner_adapter: Option<&str>,
+    partner_adapter: &str,
 ) -> Result<u32, Error> {
     link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0008, 100)
 }
@@ -684,7 +684,7 @@ pub fn link_partner_advertise_10baset_full(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     ipaddr: &str,
-    partner_adapter: Option<&str>,
+    partner_adapter: &str,
 ) -> Result<u32, Error> {
     link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0002, 10)
 }
@@ -1448,12 +1448,7 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
     }
 
     // Disable EEE and check is has been acted on.
-    //
-    // Note that we sometimes get an additional link down/up as our
-    // partner reacts to the renegotiation so we end up waiting for the adapter
-    // twice.
     ethtool::cmd_and_wait_link_up(shell, adapter, "--set-eee <ADAPTER> eee off")?;
-    ethtool::wait_link_up(shell, adapter)?;
     let status = ethtool_show_eee(shell, adapter)?;
     if status != "disabled" {
         log::error!("check_eee: EEE is {status} (expected disabled)");
@@ -1477,4 +1472,182 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
     }
 
     Ok(failures)
+}
+
+pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let mut failures = 0;
+
+    let adapter = &config.adapter;
+    let ipaddr = &config.ipaddr;
+    let mut partner = SudoExecutor::new();
+    let partner_adapter = &config.partner_adapter;
+
+    ip::cmd_and_wait_link_up(shell, adapter, "link set <ADAPTER> mtu 1000")?;
+    failures += ping_helper("mtu@1000", shell, ipaddr, "-c 10 -i 0.1 -s 972 -M do")?;
+    let reply = ping_raw(shell, ipaddr, "-c 10 -i 0.1 -s 1000 -M do")?;
+    if !reply.contains("100% packet loss") {
+        log::error!("mtu@1000: Max message size not enforced properly");
+        failures += 1;
+    }
+
+    ip::cmd_and_wait_link_up(&mut partner, partner_adapter, "link set <ADAPTER> mtu 3000")?;
+    ip::cmd_and_wait_link_up(shell, adapter, "link set <ADAPTER> mtu 3000")?;
+    failures += ping_helper("mtu@3000", shell, ipaddr, "-c 10 -i 0.1 -s 2972 -M do")?;
+    let reply = ping_raw(shell, ipaddr, "-c 10 -i 0.1 -s 3000 -M do")?;
+    if !reply.contains("100% packet loss") {
+        log::error!("mtu@1000: Max message size not enforced properly");
+        failures += 1;
+    }
+
+    ip::cmd_and_wait_link_up(&mut partner, partner_adapter, "link set <ADAPTER> mtu 1500")?;
+    ip::cmd_and_wait_link_up(shell, adapter, "link set <ADAPTER> mtu 1500")?;
+    failures += ping_helper("mtu@1500", shell, ipaddr, "-c 10 -i 0.1 -s 1472 -M do")?;
+
+    Ok(failures)
+}
+
+pub fn vlan_smoke_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let mut partner = SudoExecutor::new();
+    let partner_adapter = &config.partner_adapter;
+
+    // Create the VLAN circuit on the partner
+    ip::cmd(
+        &mut partner,
+        partner_adapter,
+        "link add link <ADAPTER> name <ADAPTER>.8 type vlan id 8",
+    )?;
+    ip::cmd(
+        &mut partner,
+        partner_adapter,
+        "addr add 192.168.20.2/24 dev <ADAPTER>.8",
+    )?;
+    ip::cmd(shell, partner_adapter, "link set up <ADAPTER>.8")?;
+
+    // Create out own VLAN circuit
+    ip::cmd(
+        &mut partner,
+        adapter,
+        "link add link <ADAPTER> name <ADAPTER>.8 type vlan id 8",
+    )?;
+    ip::cmd(shell, adapter, "addr add 192.168.20.24/24 dev <ADAPTER>.8")?;
+    ip::cmd(shell, adapter, "link set up <ADAPTER>.8")?;
+
+    // We need to test a new IP address so we need a new config
+    let mut vlan_config = config.clone();
+    vlan_config.ipaddr = "192.168.20.2".to_string();
+
+    let result = plans::smoke_test(&vlan_config, shell);
+
+    // Cleanup
+    ip::cmd(shell, adapter, "link del link <ADAPTER> name <ADAPTER>.8")?;
+    ip::cmd(
+        &mut partner,
+        partner_adapter,
+        "link del link <ADAPTER> name <ADAPTER>.8",
+    )?;
+
+    result
+}
+
+/// Capture master offset values from the ptp4l output.
+///
+/// Extracts the `-3` from lines of the following form, providing them as an
+/// array:
+///
+///     ptp4l[8885.499]: master offset         -3 s2 freq  +31709 path delay      2009
+fn ptp_offsets<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<i64> {
+    lines
+        .into_iter()
+        .filter_map(|ln| {
+            if !ln.contains("master offset") {
+                return None;
+            }
+
+            // Take the fourth value and parse it as a number
+            ln.split_whitespace()
+                .skip(3)
+                .next()
+                .and_then(|v| v.parse().ok())
+        })
+        .collect()
+}
+
+fn ptp_check_offsets(offsets: &[i64]) -> u32 {
+    let mut failures = 0;
+
+    if offsets.len() < 10 {
+        log::error!("ptp_receiver: Not enough offset values found");
+        failures += 1;
+    }
+
+    // get the maximum of the last 10 offsets and check they are good
+    // (<30ppm)
+    let max = offsets
+        .iter()
+        .rev()
+        .take(10)
+        .map(|v| v.abs())
+        .max()
+        .unwrap_or(0);
+    if max > 30 {
+        log::error!("ptp_receiver: Maximum offset ({max}) too large");
+        failures += 1;
+    }
+
+    failures
+}
+
+pub fn ptp_receiver(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let mut partner = SudoExecutor::new();
+    let partner_adapter = &config.partner_adapter;
+
+    let (tx_result, rx_result) = thread::scope(|s| {
+        let tx = s.spawn(|| {
+            partner.with_timeout_secs(60, |sh| {
+                sh.cmd(format!("timeout 50 ptp4l -i {partner_adapter} -H -m"))
+            })
+        });
+
+        let rx = shell.with_timeout_secs(60, |sh| {
+            sh.cmd(format!("timeout 45 ptp4l -i {adapter} -H -m -s"))
+        });
+
+        (tx.join().unwrap(), rx)
+    });
+
+    let _tx_reply = tx_result?;
+    let rx_reply = rx_result?;
+    let offsets = ptp_offsets(rx_reply.lines());
+    log::info!("ptp_receiver: Convergence {offsets:?}");
+    Ok(ptp_check_offsets(&offsets))
+}
+
+pub fn ptp_transmitter(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let adapter = &config.adapter;
+    let mut partner = SudoExecutor::new();
+    let partner_adapter = &config.partner_adapter;
+
+    let (tx_result, rx_result) = thread::scope(|s| {
+        let rx = s.spawn(|| {
+            partner.with_timeout_secs(60, |sh| {
+                sh.cmd(format!("timeout 45 ptp4l -i {partner_adapter} -H -m -s"))
+            })
+        });
+
+        let tx = shell.with_timeout_secs(60, |sh| {
+            sh.cmd(format!(
+                "timeout 50 ptp4l -i {adapter} -H -m --hwts_filter=full"
+            ))
+        });
+
+        (tx, rx.join().unwrap())
+    });
+
+    let _tx_reply = tx_result?;
+    let rx_reply = rx_result?;
+    let offsets = ptp_offsets(rx_reply.lines());
+    log::info!("ptp_receiver: Convergence {offsets:?}");
+    Ok(ptp_check_offsets(&offsets))
 }
