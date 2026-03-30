@@ -2,167 +2,267 @@ use expectrl::Error;
 
 use crate::{CommandExecutor, Config, tests};
 
+type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, Error>;
+
+struct TestCase<T: CommandExecutor> {
+    name: &'static str,
+    code: TestFunc<T>,
+}
+
+impl<T: CommandExecutor> TestCase<T> {
+    pub fn new(name: &'static str, code: TestFunc<T>) -> Self {
+        Self { name, code }
+    }
+
+    pub fn run(&self, config: &Config, shell: &mut T) -> Result<u32, Error> {
+        let name = self.name;
+        match (self.code)(config, shell) {
+            Ok(0) => {
+                log::info!("{name} passed");
+                Ok(0)
+            }
+            Ok(failures) => {
+                log::info!("{name} FAILED ({failures} failures)");
+                Ok(failures)
+            }
+            Err(e) => {
+                log::info!("Fatal error running {name}: {e}");
+                Err(e)
+            }
+        }
+    }
+}
+
+enum TestSet<T: CommandExecutor> {
+    TestCase(TestCase<T>),
+    TestPlan(TestPlan<T>),
+}
+
+pub struct TestPlan<T: CommandExecutor> {
+    name: &'static str,
+    plan: Vec<TestSet<T>>,
+}
+
+impl<T: CommandExecutor> TestPlan<T> {
+    pub fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            plan: Vec::new(),
+        }
+    }
+
+    pub fn test_case(&mut self, name: &'static str, code: TestFunc<T>) {
+        self.plan.push(TestSet::TestCase(TestCase::new(name, code)));
+    }
+
+    pub fn test_plan(&mut self, plan: TestPlan<T>) {
+        self.plan.push(TestSet::TestPlan(plan));
+    }
+
+    pub fn run(&self, config: &Config, shell: &mut T) -> Result<u32, Error> {
+        let name = self.name;
+        log::info!("Running {name} plan");
+        let mut failures = 0;
+
+        for t in self.plan.iter() {
+            failures += match t {
+                TestSet::TestCase(test_case) => test_case.run(config, shell)?,
+                TestSet::TestPlan(test_plan) => test_plan.run(config, shell)?,
+            }
+        }
+
+        log::info!("Completed {name} plan with {failures} failures reported");
+        Ok(failures)
+    }
+}
+
+pub fn smoke_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("smoke-test");
+
+    plan.test_case("ping", tests::ping);
+    plan.test_case("iperf3_bidir", tests::iperf3_bidir);
+    plan.test_case("iperf3_tx", tests::iperf3_tx);
+    plan.test_case("iperf3_rx", tests::iperf3_rx);
+    plan.test_case("ethtool_selftest", tests::ethtool_selftest);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
+
+    plan
+}
+
 pub fn smoke_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    let adapter = &config.adapter;
-    let ipaddr = &config.ipaddr;
+    tests::wait_for_ipv4(config, shell)?;
 
-    tests::wait_for_ipv4(shell, adapter)?;
+    smoke_test_new().run(config, shell)
+}
 
-    let mut failures = 0;
+pub fn functional_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("functional-test");
 
-    failures += tests::ping(shell, ipaddr)?;
-    failures += tests::iperf3_bidir(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_tx(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_rx(shell, adapter, ipaddr)?;
-    failures += tests::ethtool_selftest(shell, adapter)?;
-    failures += tests::verify_log_messages(shell)?;
+    plan.test_case("scp_bidir", tests::scp_bidir);
+    plan.test_case("scp_tx", tests::scp_tx);
+    plan.test_case("scp_rx", tests::scp_rx);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
 
-    Ok(failures)
+    plan
 }
 
 pub fn functional_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    let adapter = &config.adapter;
-    let ipaddr = &config.ipaddr;
-
-    tests::wait_for_ipv4(shell, adapter)?;
-
-    let mut failures = 0;
-
-    failures += tests::scp_bidir(shell, ipaddr)?;
-    failures += tests::scp_tx(shell, ipaddr)?;
-    failures += tests::scp_rx(shell, ipaddr)?;
-    failures += tests::verify_log_messages(shell)?;
-
-    Ok(failures)
+    tests::wait_for_ipv4(config, shell)?;
+    functional_test_new().run(config, shell)
 }
 
+pub fn bandwidth_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("bandwidth-test");
+
+    plan.test_case("iperf3_intervals_bidir", tests::iperf3_intervals_bidir);
+    plan.test_case("iperf3_intervals_tx", tests::iperf3_intervals_tx);
+    plan.test_case("iperf3_intervals_rx", tests::iperf3_intervals_rx);
+    plan.test_case("iperf3_udp_bidir", tests::iperf3_udp_bidir);
+    plan.test_case("iperf3_udp_bidir", tests::iperf3_udp_tx);
+    plan.test_case("iperf3_udp_bidir", tests::iperf3_udp_rx);
+    plan.test_case("iperf3_x16_bidir", tests::iperf3_x16_bidir);
+    plan.test_case("iperf3_x16_bidir", tests::iperf3_x16_tx);
+    plan.test_case("iperf3_x16_bidir", tests::iperf3_x16_rx);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
+
+    plan
+}
 pub fn bandwidth_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    let adapter = &config.adapter;
-    let ipaddr = &config.ipaddr;
+    tests::wait_for_ipv4(config, shell)?;
+    bandwidth_test_new().run(config, shell)
+}
 
-    tests::wait_for_ipv4(shell, adapter)?;
+pub fn latency_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("bandwidth-test");
 
-    let mut failures = 0;
+    plan.test_case("ping_1s", tests::ping_1s);
+    plan.test_case("ping_100ms", tests::ping_100ms);
+    plan.test_case("ping_10ms", tests::ping_10ms);
+    plan.test_case("ping_flood", tests::ping_flood);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
 
-    failures += tests::iperf3_intervals_bidir(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_intervals_tx(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_intervals_rx(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_udp_bidir(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_udp_tx(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_udp_rx(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_x16_bidir(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_x16_tx(shell, adapter, ipaddr)?;
-    failures += tests::iperf3_x16_rx(shell, adapter, ipaddr)?;
-    failures += tests::verify_log_messages(shell)?;
-
-    Ok(failures)
+    plan
 }
 
 pub fn latency_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    let adapter = &config.adapter;
-    let ipaddr = &config.ipaddr;
-
-    tests::wait_for_ipv4(shell, adapter)?;
-
-    let mut failures = 0;
-
-    failures += tests::ping_1s(shell, ipaddr)?;
-    failures += tests::ping_100ms(shell, ipaddr)?;
-    failures += tests::ping_10ms(shell, ipaddr)?;
-    failures += tests::ping_flood(shell, ipaddr)?;
-    failures += tests::verify_log_messages(shell)?;
-
-    Ok(failures)
+    tests::wait_for_ipv4(config, shell)?;
+    latency_test_new().run(config, shell)
 }
 
-pub fn quick_test(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    tests::wait_for_ipv4(shell, adapter)?;
+pub fn quick_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("quick-test");
 
-    let mut failures = 0;
+    plan.test_case("ping", tests::ping);
+    plan.test_case("iperf3_bidir", tests::iperf3_bidir);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
 
-    failures += tests::ping(shell, ipaddr)?;
-    failures += tests::iperf3_bidir(shell, adapter, ipaddr)?;
-    failures += tests::verify_log_messages(shell)?;
+    plan
+}
 
-    Ok(failures)
+pub fn quick_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    tests::wait_for_ipv4(config, shell)?;
+    quick_test_new().run(config, shell)
+}
+
+pub fn phy_an_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("phy-an-test");
+
+    plan.test_case(
+        "link_mode_and_partner_advertise_all",
+        tests::link_mode_and_partner_advertise_all,
+    );
+    plan.test_case(
+        "link_partner_advertise_1000baset_full",
+        tests::link_partner_advertise_1000baset_full,
+    );
+    plan.test_case(
+        "link_partner_advertise_100baset_full",
+        tests::link_partner_advertise_100baset_full,
+    );
+    plan.test_case(
+        "link_partner_advertise_10baset_full",
+        tests::link_partner_advertise_10baset_full,
+    );
+    plan.test_case(
+        "link_mode_advertise_1000baset_full",
+        tests::link_mode_advertise_1000baset_full,
+    );
+    plan.test_case(
+        "link_mode_advertise_100baset_full",
+        tests::link_mode_advertise_100baset_full,
+    );
+    plan.test_case(
+        "link_mode_advertise_10baset_full",
+        tests::link_mode_advertise_10baset_full,
+    );
+    // Check that the previous tests didn't damage anything when returning to default
+    plan.test_case(
+        "link_mode_and_partner_advertise_all",
+        tests::link_mode_and_partner_advertise_all,
+    );
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
+
+    plan
 }
 
 pub fn phy_an_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    let adapter = &config.adapter;
-    let ipaddr = &config.ipaddr;
-    let partner_adapter = &config.partner_adapter;
+    tests::wait_for_ipv4(config, shell)?;
+    phy_an_test_new().run(config, shell)
+}
 
-    tests::wait_for_ipv4(shell, adapter)?;
+pub fn phy_quick_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("phy-quick-test");
 
-    let mut failures = 0;
+    plan.test_case(
+        "link_mode_advertise_1000baset_full",
+        tests::link_mode_advertise_1000baset_full,
+    );
+    plan.test_case(
+        "link_mode_advertise_100baset_full",
+        tests::link_mode_advertise_100baset_full,
+    );
+    plan.test_case("link_mode_advertise_all", tests::link_mode_advertise_all);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
 
-    failures +=
-        tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
-    failures +=
-        tests::link_partner_advertise_1000baset_full(shell, adapter, ipaddr, partner_adapter)?;
-    failures +=
-        tests::link_partner_advertise_100baset_full(shell, adapter, ipaddr, partner_adapter)?;
-    failures +=
-        tests::link_partner_advertise_10baset_full(shell, adapter, ipaddr, partner_adapter)?;
-    failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
-    failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
-    failures += tests::link_mode_advertise_10baset_full(shell, adapter, ipaddr)?;
-    failures += tests::verify_log_messages(shell)?;
-
-    // Check that the previous tests didn't damage anything when returning to default
-    failures +=
-        tests::link_mode_and_partner_advertise_all(shell, adapter, ipaddr, partner_adapter)?;
-
-    Ok(failures)
+    plan
 }
 
 pub fn phy_quick_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    let adapter = &config.adapter;
-    let ipaddr = &config.ipaddr;
+    tests::wait_for_ipv4(config, shell)?;
+    phy_quick_test_new().run(config, shell)
+}
 
-    tests::wait_for_ipv4(shell, adapter)?;
+pub fn system_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("system-test");
 
-    let mut failures = 0;
+    plan.test_case("suspend_resume", tests::suspend_resume);
+    plan.test_case("suspend_resume", tests::suspend_resume);
+    plan.test_case("disable_checksum_offload", tests::disable_checksum_offload);
+    plan.test_case("disable_tso", tests::disable_tso);
+    plan.test_case("eee", tests::eee);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
 
-    failures += tests::link_mode_advertise_1000baset_full(shell, adapter, ipaddr)?;
-    failures += tests::link_mode_advertise_100baset_full(shell, adapter, ipaddr)?;
-    failures += tests::link_mode_advertise_all(shell, adapter, ipaddr)?;
-    failures += tests::verify_log_messages(shell)?;
-
-    Ok(failures)
+    plan
 }
 
 pub fn system_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    let adapter = &config.adapter;
-    let ipaddr = &config.ipaddr;
+    tests::wait_for_ipv4(config, shell)?;
+    system_test_new().run(config, shell)
+}
 
-    tests::wait_for_ipv4(shell, &config.adapter)?;
+pub fn partner_test_new<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("partner-test");
 
-    let mut failures = 0;
+    plan.test_case("mtu", tests::mtu);
+    plan.test_case("vlan_smoke_test", tests::vlan_smoke_test);
+    plan.test_case("ptp_receiver", tests::ptp_receiver);
+    plan.test_case("ptp_transmitter", tests::ptp_transmitter);
+    plan.test_case("verify_log_messages", tests::verify_log_messages);
 
-    failures += tests::suspend_resume(shell, adapter, ipaddr)?;
-    failures += tests::suspend_resume(shell, adapter, ipaddr)?;
-    failures += tests::disable_checksum_offload(shell, adapter, ipaddr)?;
-    failures += tests::disable_tso(shell, adapter, ipaddr)?;
-    failures += tests::eee(shell, adapter, ipaddr)?;
-    failures += tests::verify_log_messages(shell)?;
-
-    Ok(failures)
+    plan
 }
 
 pub fn partner_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
-    tests::wait_for_ipv4(shell, &config.adapter)?;
-
-    let mut failures = 0;
-
-    failures += tests::mtu(config, shell)?;
-    failures += tests::vlan_smoke_test(config, shell)?;
-    failures += tests::ptp_receiver(config, shell)?;
-    failures += tests::ptp_transmitter(config, shell)?;
-
-    Ok(failures)
+    tests::wait_for_ipv4(config, shell)?;
+    partner_test_new().run(config, shell)
 }

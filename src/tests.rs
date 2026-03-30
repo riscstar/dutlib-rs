@@ -41,7 +41,8 @@ pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<()
 }
 
 /// Wait for the specified IP address to be assigned to the board
-pub fn wait_for_ipv4(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
+pub fn wait_for_ipv4(config: &Config, shell: &mut impl CommandExecutor) -> Result<(), Error> {
+    let adapter = &config.adapter;
     for _ in 0..6 {
         let reply = shell.cmd(&format!("ip -4 addr show {adapter}"))?;
 
@@ -137,35 +138,36 @@ pub fn ping_helper(
 }
 
 /// Issue 10 pings at 0.5s intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
-    ping_helper("ping", shell, ipaddr, "-c 10 -i 0.5")
+pub fn ping(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    ping_helper("ping", shell, &config.ipaddr, "-c 10 -i 0.5")
 }
 
 /// Issue 10 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_1s(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
-    ping_helper("ping_1s", shell, ipaddr, "-c 10")
+pub fn ping_1s(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    ping_helper("ping_1s", shell, &config.ipaddr, "-c 10")
 }
 
 /// Issue 100 pings at 100ms intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_100ms(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
-    ping_helper("ping_100ms", shell, ipaddr, "-c 100 -i 0.1")
+pub fn ping_100ms(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    ping_helper("ping_100ms", shell, &config.ipaddr, "-c 100 -i 0.1")
 }
 
 /// Issue 1000 pings at 10ms intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_10ms(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
-    ping_helper("ping_10ms", shell, ipaddr, "-c 1000 -i 0.01")
+pub fn ping_10ms(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    ping_helper("ping_10ms", shell, &config.ipaddr, "-c 1000 -i 0.01")
 }
 
 /// Issue 5000 pings at maximum rate, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_flood(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
-    ping_helper("ping_flood", shell, ipaddr, "-c 5000 -f")
+pub fn ping_flood(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    ping_helper("ping_flood", shell, &config.ipaddr, "-c 5000 -f")
 }
 
 fn iperf3_helper(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    ipaddr: &str,
     args: &str,
 ) -> Result<([f64; 2], [f64; 2]), Error> {
+    let ipaddr = &config.ipaddr;
     let reply = shell.cmd(&format!("iperf3 -c {ipaddr} -i 5 -t 5 --json {args}"))?;
 
     // During iperf3 execution there could be AER error reports on the console.
@@ -202,12 +204,12 @@ fn iperf3_helper(
 }
 
 pub fn iperf3_bidir_tuneable(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    ipaddr: &str,
     tx_threshold: f64,
     rx_threshold: f64,
 ) -> Result<u32, Error> {
-    let (tx, rx) = iperf3_helper(shell, ipaddr, "--bidir")?;
+    let (tx, rx) = iperf3_helper(config, shell, "--bidir")?;
     log::info!("iperf3_bidir: TX is {tx:?}, RX is {rx:?}");
 
     Ok(
@@ -224,12 +226,8 @@ pub fn iperf3_bidir_tuneable(
     )
 }
 
-pub fn iperf3_bidir(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let speed = ethtool::get_speed(shell, adapter);
+pub fn iperf3_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let speed = ethtool::get_speed(shell, &config.adapter);
     let (tthresh, rthresh) = (
         speed * 0.7,
         if speed >= 2500.0 {
@@ -239,17 +237,13 @@ pub fn iperf3_bidir(
             speed * 0.7
         },
     );
-    iperf3_bidir_tuneable(shell, ipaddr, tthresh, rthresh)
+    iperf3_bidir_tuneable(config, shell, tthresh, rthresh)
 }
 
-pub fn iperf3_rx(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let bench = iperf3_helper(shell, ipaddr, "-R")?.0;
+pub fn iperf3_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let bench = iperf3_helper(config, shell, "-R")?.0;
     log::info!("iperf3_rx: RX is {bench:?}");
-    let threshold = ethtool::get_speed(shell, adapter) * 0.8;
+    let threshold = ethtool::get_speed(shell, &config.adapter) * 0.8;
 
     Ok(if bench[0] < threshold || bench[1] < threshold {
         log::warn!("iperf3_rx: Network performance is too slow {bench:?}\n");
@@ -259,14 +253,10 @@ pub fn iperf3_rx(
     })
 }
 
-pub fn iperf3_tx(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let bench = iperf3_helper(shell, ipaddr, "")?.0;
+pub fn iperf3_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let bench = iperf3_helper(config, shell, "")?.0;
     log::info!("iperf3_tx: TX performance is {bench:?}");
-    let threshold = ethtool::get_speed(shell, adapter) * 0.8;
+    let threshold = ethtool::get_speed(shell, &config.adapter) * 0.8;
 
     Ok(if bench[0] < threshold || bench[1] < threshold {
         log::warn!("iperf3_tx: Network performance is too slow {bench:?}\n");
@@ -276,9 +266,10 @@ pub fn iperf3_tx(
     })
 }
 
-pub fn ethtool_selftest(shell: &mut impl CommandExecutor, adapter: &str) -> Result<u32, Error> {
+pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
 
+    let adapter = &config.adapter;
     let reply = shell.cmd(format!("ethtool -t {adapter}"))?;
     if reply.contains("Cannot test: Operation not supported") {
         log::warn!(
@@ -320,7 +311,10 @@ pub fn ethtool_selftest(shell: &mut impl CommandExecutor, adapter: &str) -> Resu
 }
 
 /// Verify the log messages
-pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn verify_log_messages(
+    _config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
     let mut failures = 0;
 
     // dwmac-tc956x 0001:05:00.1 enP1p5s0f1: PHY [stmmac-501:1c] driver [Qualcomm QCA8081] (irq=279)
@@ -434,7 +428,9 @@ pub fn verify_log_messages(shell: &mut impl CommandExecutor) -> Result<u32, Erro
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_bidir(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+pub fn scp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let ipaddr = &config.ipaddr;
+
     // The vendor driver has very limited RX bandwidth so we need a depressingly
     // long timeout here.
     //shell.with_timeout_secs(30, |sh| {
@@ -484,7 +480,9 @@ pub fn scp_bidir(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, 
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_rx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+pub fn scp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let ipaddr = &config.ipaddr;
+
     // The vendor driver has very limited RX bandwidth so we need a depressingly
     // long timeout here.
     //shell.with_timeout_secs(30, |sh| {
@@ -504,12 +502,14 @@ pub fn scp_rx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Err
     })
 }
 
-/// Transfer 1GiB of random dethtoolata from DUT to partner and verify sha256sum
+/// Transfer 1GiB of random data from DUT to partner and verify sha256sum
 /// matches.
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_tx(shell: &mut impl CommandExecutor, ipaddr: &str) -> Result<u32, Error> {
+pub fn scp_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let ipaddr = &config.ipaddr;
+
     shell.with_timeout_secs(30, |sh| {
         sh.cmd(
             "dd if=/dev/urandom of=urandom_tx.dat bs=1024 count=$((1024*1024)) status=progress",
@@ -552,13 +552,14 @@ pub fn link_partner_ethtool(args: &str, partner_adapter: Option<&str>) -> Result
 
 /// Run smoke tests at the default (maximum) link speed.
 pub fn link_mode_and_partner_advertise_all(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-    partner_adapter: &str,
 ) -> Result<u32, Error> {
     let mut failures = 0;
+
+    let adapter = &config.adapter;
     let mut partner = SudoExecutor::new();
+    let partner_adapter = &config.partner_adapter;
 
     // advertise everything
     ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
@@ -571,21 +572,22 @@ pub fn link_mode_and_partner_advertise_all(
         failures += 1;
     }
 
-    failures += plans::quick_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(config, shell)?;
 
     Ok(failures)
 }
 
 fn link_partner_advertise_helper(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-    partner_adapter: &str,
     advertisement: u64,
     expected_speed: u32,
 ) -> Result<u32, Error> {
     let mut failures = 0;
+
+    let adapter = &config.adapter;
     let mut partner = SudoExecutor::new();
+    let partner_adapter = &config.partner_adapter;
 
     // get the initial adapter info
     let Some(initial_info) = ethtool::wait_link_up(shell, adapter)? else {
@@ -611,7 +613,7 @@ fn link_partner_advertise_helper(
     }
 
     thread::sleep(Duration::from_secs(2));
-    let smoke_test_result = plans::quick_test(shell, adapter, ipaddr);
+    let smoke_test_result = plans::quick_test(config, shell);
 
     // restore the link partner's advertisement and make sure we get the adapter back
     ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
@@ -619,7 +621,7 @@ fn link_partner_advertise_helper(
 
     // Make sure "something" works after restoring the defaults
     thread::sleep(Duration::from_secs(2));
-    failures += ping(shell, ipaddr)?;
+    failures += ping(config, shell)?;
 
     // deferred error handling (to ensure the advertisement was restored)
     let test_info = test_info_result?;
@@ -659,44 +661,39 @@ fn link_partner_advertise_helper(
 /// Provoke the link partner to advertise 1000baseT/Full and verify correct
 /// negotiation.
 pub fn link_partner_advertise_1000baset_full(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-    partner_adapter: &str,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0020, 1000)
+    link_partner_advertise_helper(config, shell, 0x0020, 1000)
 }
 
 /// Provoke the link partner to advertise 100baseT/Full and verify correct
 /// negotiation.
 pub fn link_partner_advertise_100baset_full(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-    partner_adapter: &str,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0008, 100)
+    link_partner_advertise_helper(config, shell, 0x0008, 100)
 }
 
 /// Provoke the link partner to advertise 10baseT/Full and verify correct
 /// negotiation.
 pub fn link_partner_advertise_10baset_full(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-    partner_adapter: &str,
 ) -> Result<u32, Error> {
-    link_partner_advertise_helper(shell, adapter, ipaddr, partner_adapter, 0x0002, 10)
+    link_partner_advertise_helper(config, shell, 0x0002, 10)
 }
 
 fn link_mode_advertise_helper(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
     advertisement: u64,
     expected_speed: u32,
 ) -> Result<u32, Error> {
     let mut failures = 0;
+
+    let adapter = &config.adapter;
 
     // get the initial adapter info
     let Some(initial_info) = ethtool::wait_link_up(shell, adapter)? else {
@@ -718,13 +715,13 @@ fn link_mode_advertise_helper(
         log::info!("Link negotiated at {speed}Mb/s");
     }
 
-    let smoke_test_result = plans::quick_test(shell, adapter, ipaddr);
+    let smoke_test_result = plans::quick_test(config, shell);
 
     // restore the link partner's advertisement and make sure we get the adapter back
     let restored_info = ethtool::advertise(shell, adapter, u64::MAX)?;
 
     // Make sure "something" works after restoring the defaults
-    failures += ping(shell, ipaddr)?;
+    failures += ping(config, shell)?;
 
     // deferred error handling (to ensure the advertisement was restored)
     let test_info = test_info_result?;
@@ -763,11 +760,12 @@ fn link_mode_advertise_helper(
 
 /// Run smoke tests at the default (maximum) link speed.
 pub fn link_mode_advertise_all(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
     let mut failures = 0;
+
+    let adapter = &config.adapter;
 
     // advertise everything
     let adapter_info = ethtool::advertise(shell, adapter, u64::MAX)?;
@@ -779,36 +777,33 @@ pub fn link_mode_advertise_all(
         failures += 1;
     }
 
-    failures += plans::quick_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(config, shell)?;
 
     Ok(failures)
 }
 
 /// Advertise (up to) 1000baseT/Full and verify correct negotiation.
 pub fn link_mode_advertise_1000baset_full(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
-    link_mode_advertise_helper(shell, adapter, ipaddr, 0x003f, 1000)
+    link_mode_advertise_helper(config, shell, 0x003f, 1000)
 }
 
 /// Advertise (up to) 100baseT/Full and verify correct negotiation.
 pub fn link_mode_advertise_100baset_full(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
-    link_mode_advertise_helper(shell, adapter, ipaddr, 0x000f, 100)
+    link_mode_advertise_helper(config, shell, 0x000f, 100)
 }
 
 /// Advertise (up to) 10baseT/Full and verify correct negotiation.
 pub fn link_mode_advertise_10baset_full(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
-    link_mode_advertise_helper(shell, adapter, ipaddr, 0x0003, 10)
+    link_mode_advertise_helper(config, shell, 0x0003, 10)
 }
 
 //
@@ -864,10 +859,12 @@ fn get_lost_percent(stats: Option<StreamStats>) -> f64 {
 }
 
 fn iperf3_new_helper(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    ipaddr: &str,
     args: &str,
 ) -> Result<IperfResult, Error> {
+    let ipaddr = &config.ipaddr;
+
     let reply = shell.with_timeout_secs(45, |sh| {
         sh.cmd(&format!("iperf3 -c {ipaddr} -t 30 --json {args}"))
     })?;
@@ -885,13 +882,12 @@ fn iperf3_new_helper(
 }
 
 pub fn iperf3_intervals_bidir(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
-    let stats = iperf3_new_helper(shell, ipaddr, "-i 5 --bidir")?;
+    let stats = iperf3_new_helper(config, shell, "-i 5 --bidir")?;
 
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
 
     let mut failures = 0;
 
@@ -944,13 +940,12 @@ pub fn iperf3_intervals_bidir(
 }
 
 pub fn iperf3_intervals_tx(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
-    let stats = iperf3_new_helper(shell, ipaddr, "-i 5")?;
+    let stats = iperf3_new_helper(config, shell, "-i 5")?;
 
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
 
     let mut failures = 0;
 
@@ -992,13 +987,12 @@ pub fn iperf3_intervals_tx(
 }
 
 pub fn iperf3_intervals_rx(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
-    let stats = iperf3_new_helper(shell, ipaddr, "-i 5 -R")?;
+    let stats = iperf3_new_helper(config, shell, "-i 5 -R")?;
 
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
 
     let mut failures = 0;
 
@@ -1039,17 +1033,13 @@ pub fn iperf3_intervals_rx(
     Ok(failures)
 }
 
-pub fn iperf3_udp_bidir(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+pub fn iperf3_udp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
     let stats = iperf3_new_helper(
+        config,
         shell,
-        ipaddr,
         &format!("-i 30 --udp --bitrate {bitrate}M --bidir"),
     )?;
 
@@ -1080,15 +1070,11 @@ pub fn iperf3_udp_bidir(
     Ok(failures)
 }
 
-pub fn iperf3_udp_tx(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+pub fn iperf3_udp_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
-    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --udp --bitrate {bitrate}M"))?;
+    let stats = iperf3_new_helper(config, shell, &format!("-i 30 --udp --bitrate {bitrate}M"))?;
 
     if stats.end.streams.len() != 1 {
         log::error!("Unexpected reply from iperf3");
@@ -1115,17 +1101,13 @@ pub fn iperf3_udp_tx(
     Ok(failures)
 }
 
-pub fn iperf3_udp_rx(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+pub fn iperf3_udp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
     let stats = iperf3_new_helper(
+        config,
         shell,
-        ipaddr,
         &format!("-i 30 --udp --bitrate {bitrate}M -R"),
     )?;
 
@@ -1154,14 +1136,10 @@ pub fn iperf3_udp_rx(
     Ok(failures)
 }
 
-pub fn iperf3_x16_bidir(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 8 --bidir"))?;
+pub fn iperf3_x16_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(config, shell, &format!("-i 30 --parallel 8 --bidir"))?;
 
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
 
     let mut failures = 0;
 
@@ -1218,14 +1196,10 @@ pub fn iperf3_x16_bidir(
     Ok(failures)
 }
 
-pub fn iperf3_x16_tx(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 16"))?;
+pub fn iperf3_x16_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(config, shell, &format!("-i 30 --parallel 16"))?;
 
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
 
     let mut failures = 0;
 
@@ -1268,14 +1242,10 @@ pub fn iperf3_x16_tx(
     Ok(failures)
 }
 
-pub fn iperf3_x16_rx(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
-    let stats = iperf3_new_helper(shell, ipaddr, &format!("-i 30 --parallel 16 -R"))?;
+pub fn iperf3_x16_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let stats = iperf3_new_helper(config, shell, &format!("-i 30 --parallel 16 -R"))?;
 
-    let speed_mbps = ethtool::get_speed(shell, adapter);
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
 
     let mut failures = 0;
 
@@ -1322,11 +1292,7 @@ pub fn iperf3_x16_rx(
 // System integration tests
 //
 
-pub fn suspend_resume(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn suspend_resume(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
 
     if !shell.cmd("ls /sys/power")?.contains("pm_test") {
@@ -1345,17 +1311,18 @@ pub fn suspend_resume(
     // wait for the link to come up but there is only a brief interruption to
     // the link so there should be no need for a new DHCP lease.
     thread::sleep(Duration::from_secs(5));
-    failures += plans::quick_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(config, shell)?;
 
     Ok(failures)
 }
 
 pub fn disable_checksum_offload(
+    config: &Config,
     shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
 ) -> Result<u32, Error> {
     let mut failures = 0;
+
+    let adapter = &config.adapter;
 
     let reply = shell.cmd(format!("ethtool -k {adapter} | grep '^[tr]x-checksumming'"))?;
     if !reply.contains("tx-checksumming: on") || !reply.contains("rx-checksumming: on") {
@@ -1367,23 +1334,21 @@ pub fn disable_checksum_offload(
 
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
-    failures += ping(shell, ipaddr)?;
+    failures += ping(config, shell)?;
     let speed = ethtool::get_speed(shell, adapter);
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
-    failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
+    failures += iperf3_bidir_tuneable(config, shell, tx_thresh, rx_thresh)?;
 
     shell.cmd(format!("ethtool -K {adapter} tx on rx on"))?;
-    failures += plans::quick_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(config, shell)?;
 
     Ok(failures)
 }
 
-pub fn disable_tso(
-    shell: &mut impl CommandExecutor,
-    adapter: &str,
-    ipaddr: &str,
-) -> Result<u32, Error> {
+pub fn disable_tso(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
+
+    let adapter = &config.adapter;
 
     let reply = shell.cmd(format!(
         "ethtool -k {adapter} | grep '^tcp-segmentation-offload'"
@@ -1397,13 +1362,13 @@ pub fn disable_tso(
 
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
-    failures += ping(shell, ipaddr)?;
+    failures += ping(config, shell)?;
     let speed = ethtool::get_speed(shell, adapter);
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
-    failures += iperf3_bidir_tuneable(shell, ipaddr, tx_thresh, rx_thresh)?;
+    failures += iperf3_bidir_tuneable(config, shell, tx_thresh, rx_thresh)?;
 
     shell.cmd(format!("ethtool -K {adapter} tso on"))?;
-    failures += plans::quick_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(config, shell)?;
 
     Ok(failures)
 }
@@ -1419,8 +1384,10 @@ pub fn ethtool_show_eee(shell: &mut impl CommandExecutor, adapter: &str) -> Resu
     Ok(status.to_string())
 }
 
-pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Result<u32, Error> {
+pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
+
+    let adapter = &config.adapter;
 
     let og_status = ethtool_show_eee(shell, adapter)?;
     if og_status != "active" && og_status != "inactive" {
@@ -1456,7 +1423,7 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
     }
 
     // Check everything still works
-    failures += plans::quick_test(shell, adapter, ipaddr)?;
+    failures += plans::quick_test(config, shell)?;
 
     // Re-enable EEE
     ethtool::cmd_and_wait_link_up(shell, adapter, "--set-eee <ADAPTER> eee on")?;
@@ -1476,6 +1443,9 @@ pub fn eee(shell: &mut impl CommandExecutor, adapter: &str, ipaddr: &str) -> Res
 
 pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
+
+    // TODO: This needs to become a partner test since we have to force our
+    //       partner to enable EEE (I226 via NetworkManager is off by default)
 
     let adapter = &config.adapter;
     let ipaddr = &config.ipaddr;
