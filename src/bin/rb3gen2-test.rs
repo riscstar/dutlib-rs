@@ -66,18 +66,6 @@ enum Commands {
 
 #[derive(Debug, Parser)]
 pub struct CycleCli {
-    /// Name of the network driver module to be loaded
-    #[arg(short, long, default_value = "dwmac_tc956x")]
-    module: String,
-
-    /// Name of the device (as it appears in `ip addr`)
-    #[arg(short, long, default_value = "enP1p5s0f1")]
-    name: String,
-
-    /// IP address (or name) of a machine running `iperf3 -s`
-    #[arg(short, long, default_value = "192.168.10.2")]
-    ipaddr: String,
-
     /// Number of test cycles to perform
     #[arg(short, long, default_value_t = 100)]
     cycles: u32,
@@ -122,7 +110,7 @@ fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
 
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
-    shell.load_module(&args.module)?;
+    shell.load_module(&config.module)?;
     tests::wait_for_ipv4(&config, &mut shell)?;
 
     for cycle in 0..args.cycles {

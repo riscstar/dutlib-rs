@@ -83,18 +83,6 @@ fn reboot(config: Config) -> Result<(), Error> {
 
 #[derive(Debug, Parser)]
 pub struct BootCycleCli {
-    /// Name of the network driver module to be loaded
-    #[arg(short, long, default_value = "dwmac_tc956x")]
-    module: String,
-
-    /// Name of the device (as it appears in `ip addr`)
-    #[arg(short, long, default_value = "enP1p5s0f1")]
-    name: String,
-
-    /// IP address (or name) of a machine running `iperf3 -s`
-    #[arg(short, long, default_value = "192.168.10.2")]
-    ipaddr: String,
-
     /// Number of boot cycles to perform
     #[arg(short, long, default_value_t = 100)]
     cycles: u32,
@@ -151,7 +139,7 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     for cycle in 0..args.cycles {
         if remaining_this_boot <= 1 {
             let _ = board.reboot(console);
-            console = board.console_with_module(&args.module)?;
+            console = board.console_with_module(&config.module)?;
             let _ = tests::uname(&mut console).inspect_err(|e| log::error!("{e}"));
             remaining_this_boot = args.cycles_per_boot;
         } else {
