@@ -35,11 +35,10 @@ configuration file, giving greater flexibility for step #1 above.
 
 ## Additional configuration for remote runners
 
-The test suite needs to make local changes to your networking configuration.
-To make this work robustly configure `sudo` to allow `ethtool` and `ip`
-to be run without requiring a password.
+The test suite needs to make local changes to your networking configuration
+and will use sudo to do so. The simplest way to enable this is to configure
+sudo to allow it to operate without a password:
 
 ~~~
-%sudo ALL=(ALL) NOPASSWD: /usr/sbin/ethtool
-%sudo ALL=(ALL) NOPASSWD: /usr/sbin/ip
+%sudo ALL=(ALL) NOPASSWD: ALL
 ~~~
