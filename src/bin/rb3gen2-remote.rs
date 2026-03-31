@@ -3,10 +3,15 @@ use std::{
     process,
 };
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use expectrl::{Error, repl::ReplSession, session::OsSession};
 
-use dutlib::{CommandExecutor, Config, dut::DeviceUnderTest, plans, read_config, tests};
+use dutlib::{
+    CommandExecutor, Config,
+    dut::DeviceUnderTest,
+    plans::{self, TestPlan},
+    read_config, tests,
+};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -76,48 +81,6 @@ fn reboot(config: Config) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(Clone, Debug, ValueEnum)]
-pub enum TestPlan {
-    SmokeTest,
-    FunctionalTest,
-    BandwidthTest,
-    LatencyTest,
-    PhyAnTest,
-    PhyQuickTest,
-    SystemTest,
-    PartnerTest,
-}
-
-type TestPlanRunner = fn(&Config, &mut ReplSession<OsSession>) -> Result<u32, Error>;
-
-impl TestPlan {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::SmokeTest => "Smoke tests",
-            Self::FunctionalTest => "Functional tests",
-            Self::BandwidthTest => "Bandwidth tests",
-            Self::LatencyTest => "Latency tests",
-            Self::PhyAnTest => "PHY auto-negotiation tests",
-            Self::PhyQuickTest => "PHY quick auto-negotiation tests",
-            Self::SystemTest => "System integration tests",
-            Self::PartnerTest => "Partner tests",
-        }
-    }
-
-    fn runner(&self) -> TestPlanRunner {
-        match self {
-            Self::SmokeTest => plans::smoke_test,
-            Self::FunctionalTest => plans::functional_test,
-            Self::BandwidthTest => plans::bandwidth_test,
-            Self::LatencyTest => plans::latency_test,
-            Self::PhyAnTest => plans::phy_an_test,
-            Self::PhyQuickTest => plans::phy_quick_test,
-            Self::SystemTest => plans::system_test,
-            Self::PartnerTest => plans::partner_test,
-        }
-    }
-}
-
 #[derive(Debug, Parser)]
 pub struct BootCycleCli {
     /// Name of the network driver module to be loaded
@@ -146,10 +109,37 @@ pub struct BootCycleCli {
 
     /// Choose which test plan to cycle through
     #[arg(short, long, default_value = "smoke-test")]
-    plan: TestPlan,
+    plan: String,
+}
+
+fn all_test_plans() -> TestPlan<ReplSession<OsSession>> {
+    let mut plan = TestPlan::new("all-tests");
+    plan.test_plan(plans::smoke_test_new());
+    plan.test_plan(plans::functional_test_new());
+    plan.test_plan(plans::bandwidth_test_new());
+    plan.test_plan(plans::latency_test_new());
+    plan.test_plan(plans::phy_an_test_new());
+    plan.test_plan(plans::phy_quick_test_new());
+    plan.test_plan(plans::system_test_new());
+    plan.test_plan(plans::partner_test_new());
+
+    plan
 }
 
 fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
+    let all_plans = all_test_plans();
+    let mut plan = None;
+    for candidate in all_plans.iter() {
+        if args.plan == candidate.name() {
+            plan = Some(candidate);
+            break;
+        }
+    }
+    let Some(plan) = plan else {
+        log::error!("Unknown test plan: {}", args.plan);
+        return Ok(());
+    };
+
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
 
     let mut good = 0;
@@ -168,15 +158,14 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
             remaining_this_boot -= 1;
         }
 
-        match args.plan.runner()(&config, &mut console) {
+        tests::wait_for_ipv4(&config, &mut console)?;
+        match plan.run(&config, &mut console) {
             Ok(0) => good += 1,
-            Ok(n) => {
+            Ok(_) => {
                 bad += 1;
-                log::error!("{n} tested failed");
             }
-            Err(err) => {
+            Err(_) => {
                 bad += 1;
-                log::error!("{err}");
                 log::info!("{:?}", console.try_read_to_string());
             }
         };
@@ -197,20 +186,18 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test(config: Config, test_plan: TestPlan) -> Result<(), Error> {
+fn run_test(config: Config, test_plan: TestPlan<ReplSession<OsSession>>) -> Result<(), Error> {
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
+    tests::wait_for_ipv4(&config, &mut console)?;
 
-    let name = test_plan.name();
-    match test_plan.runner()(&config, &mut console) {
-        Ok(0) => {
-            log::info!("{name} completed successfully");
-            Ok(())
+    match test_plan.run(&config, &mut console) {
+        Ok(0) => Ok(()),
+        Ok(n) => {
+            Err(io::Error::other(format!("{} reported {n} failures", test_plan.name())).into())
         }
-        Ok(n) => Err(io::Error::other(format!("{name} reported {n} failures")).into()),
         Err(e) => {
-            log::error!("{name} did not complete");
             log::info!("{:?}", console.try_read_to_string());
             Err(e)
         }
@@ -218,34 +205,22 @@ fn run_test(config: Config, test_plan: TestPlan) -> Result<(), Error> {
 }
 
 fn all_tests(config: Config) -> Result<(), Error> {
-    let tests = [
-        TestPlan::SmokeTest,
-        TestPlan::FunctionalTest,
-        TestPlan::BandwidthTest,
-        TestPlan::LatencyTest,
-        TestPlan::PhyAnTest,
-        TestPlan::SystemTest,
-        TestPlan::PartnerTest,
-    ];
-
+    let plan = all_test_plans();
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
+    tests::wait_for_ipv4(&config, &mut console)?;
 
     let mut failures = 0;
 
-    for (plan, name) in tests.iter().map(|p| (p.runner(), p.name())) {
-        let result = plan(&config, &mut console);
+    // phy-quick-test is a subset of phy-an-test so no need to run that one
+    for sub_plan in plan.iter().filter(|p| p.name() != "phy-quick-test") {
+        let result = sub_plan.run(&config, &mut console);
         match result {
-            Ok(0) => {
-                log::info!("{name} completed successfully");
-            }
             Ok(n) => {
-                log::info!("{name} reported {n} failures");
                 failures += n;
             }
-            Err(err) => {
-                log::error!("{name} failed to complete due to an internal error ({err})");
+            Err(_) => {
                 log::info!("{:?}", console.try_read_to_string());
                 failures += 1;
 
@@ -259,7 +234,7 @@ fn all_tests(config: Config) -> Result<(), Error> {
 
     match failures {
         0 => log::info!("All tests completed successfully"),
-        n => log::info!("All tests completed but reported {n} failures"),
+        n => log::error!("All tests completed but reported {n} failures"),
     }
 
     Ok(())
@@ -295,15 +270,15 @@ fn app() -> Result<(), Error> {
 
     match cli.command {
         Commands::Reboot => reboot(config),
-        Commands::SmokeTest => run_test(config, TestPlan::SmokeTest),
+        Commands::SmokeTest => run_test(config, plans::smoke_test_new()),
         Commands::BootCycle(args) => boot_cycle(config, args),
-        Commands::FunctionalTest => run_test(config, TestPlan::FunctionalTest),
-        Commands::BandwidthTest => run_test(config, TestPlan::BandwidthTest),
-        Commands::LatencyTest => run_test(config, TestPlan::LatencyTest),
-        Commands::PhyAnTest => run_test(config, TestPlan::PhyAnTest),
-        Commands::PhyQuickTest => run_test(config, TestPlan::PhyQuickTest),
-        Commands::SystemTest => run_test(config, TestPlan::SystemTest),
-        Commands::PartnerTest => run_test(config, TestPlan::PartnerTest),
+        Commands::FunctionalTest => run_test(config, plans::functional_test_new()),
+        Commands::BandwidthTest => run_test(config, plans::bandwidth_test_new()),
+        Commands::LatencyTest => run_test(config, plans::latency_test_new()),
+        Commands::PhyAnTest => run_test(config, plans::phy_an_test_new()),
+        Commands::PhyQuickTest => run_test(config, plans::phy_quick_test_new()),
+        Commands::SystemTest => run_test(config, plans::system_test_new()),
+        Commands::PartnerTest => run_test(config, plans::partner_test_new()),
         Commands::AllTests => all_tests(config),
     }
 }

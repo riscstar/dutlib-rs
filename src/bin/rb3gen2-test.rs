@@ -3,10 +3,15 @@ use std::{
     process::{self, Command},
 };
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use expectrl::Error;
 
-use dutlib::{CommandExecutor, Config, native::NativeExecutor, plans, read_config, tests};
+use dutlib::{
+    CommandExecutor, Config,
+    native::NativeExecutor,
+    plans::{self, TestPlan},
+    read_config, tests,
+};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -22,84 +27,41 @@ struct Cli {
     /// Increase verbosity
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
+    /// Name of the network driver module to be loaded
+    #[arg(short, long)]
+    module: Option<String>,
+
+    /// Name of the device (as it appears in `ip addr`)
+    #[arg(short, long)]
+    adapter: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Run a simple smoke test
-    SmokeTest(TestCli),
+    SmokeTest,
 
     /// Cycling test to estimate test reliability
     Cycle(CycleCli),
 
     /// Functional testing (inc. data integrity)
-    FunctionalTest(TestCli),
+    FunctionalTest,
 
     /// Bandwidth testing
-    BandwidthTest(TestCli),
+    BandwidthTest,
 
     /// Latency testing (using ping)
-    LatencyTest(TestCli),
+    LatencyTest,
 
     /// PHY Auto-Negotiation testing covering only local advertisements
-    PhyQuickTest(TestCli),
+    PhyQuickTest,
 
     /// System integration testing (including suspend/resume tests)
-    SystemTest(TestCli),
+    SystemTest,
 
     /// Run all tests that do not require the board to be rebooted.
-    AllTests(TestCli),
-}
-
-#[derive(Debug, Parser)]
-pub struct TestCli {
-    /// Name of the network driver module to be loaded
-    #[arg(short, long, default_value = "dwmac_tc956x")]
-    module: String,
-
-    /// Name of the device (as it appears in `ip addr`)
-    #[arg(short, long, default_value = "enP1p5s0f1")]
-    name: String,
-
-    /// IP address (or name) of a machine running `iperf3 -s`
-    #[arg(short, long, default_value = "192.168.10.2")]
-    ipaddr: String,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-pub enum TestPlan {
-    SmokeTest,
-    FunctionalTest,
-    BandwidthTest,
-    LatencyTest,
-    PhyQuickTest,
-    SystemTest,
-}
-
-type TestPlanRunner = fn(&Config, &mut NativeExecutor) -> Result<u32, Error>;
-
-impl TestPlan {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::SmokeTest => "Smoke tests",
-            Self::FunctionalTest => "Functional tests",
-            Self::BandwidthTest => "Bandwidth tests",
-            Self::LatencyTest => "Latency tests",
-            Self::PhyQuickTest => "PHY quick auto-negotiation tests",
-            Self::SystemTest => "System integration tests",
-        }
-    }
-
-    fn runner(&self) -> TestPlanRunner {
-        match self {
-            Self::SmokeTest => plans::smoke_test,
-            Self::FunctionalTest => plans::functional_test,
-            Self::BandwidthTest => plans::bandwidth_test,
-            Self::LatencyTest => plans::latency_test,
-            Self::PhyQuickTest => plans::phy_quick_test,
-            Self::SystemTest => plans::system_test,
-        }
-    }
+    AllTests,
 }
 
 #[derive(Debug, Parser)]
@@ -126,23 +88,48 @@ pub struct CycleCli {
 
     /// Choose which test plan to cycle through
     #[arg(short, long, default_value = "smoke-test")]
-    plan: TestPlan,
+    plan: String,
+}
+
+fn all_test_plans() -> TestPlan<NativeExecutor> {
+    let mut plan = TestPlan::new("all-tests");
+    plan.test_plan(plans::smoke_test_new());
+    plan.test_plan(plans::functional_test_new());
+    plan.test_plan(plans::bandwidth_test_new());
+    plan.test_plan(plans::latency_test_new());
+    plan.test_plan(plans::phy_quick_test_new());
+    plan.test_plan(plans::system_test_new());
+
+    plan
 }
 
 fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
+    let all_plans = all_test_plans();
+    let mut plan = None;
+    for candidate in all_plans.iter() {
+        if args.plan == candidate.name() {
+            plan = Some(candidate);
+            break;
+        }
+    }
+    let Some(plan) = plan else {
+        log::error!("Unknown test plan: {}", args.plan);
+        return Ok(());
+    };
+
     let mut good = 0;
     let mut bad = 0;
 
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&args.module)?;
+    tests::wait_for_ipv4(&config, &mut shell)?;
 
     for cycle in 0..args.cycles {
-        match args.plan.runner()(&config, &mut shell)? {
+        match plan.run(&config, &mut shell)? {
             0 => good += 1,
-            n => {
+            _n => {
                 bad += 1;
-                log::error!("{n} tests failed");
             }
         };
 
@@ -162,65 +149,26 @@ fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test(config: Config, args: TestCli, test_plan: TestPlan) -> Result<(), Error> {
+fn run_test(config: Config, test_plan: TestPlan<NativeExecutor>) -> Result<(), Error> {
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
-    shell.load_module(&args.module)?;
+    shell.load_module(&config.module)?;
+    tests::wait_for_ipv4(&config, &mut shell)?;
 
-    let name = test_plan.name();
-    match test_plan.runner()(&config, &mut shell) {
-        Ok(0) => {
-            log::info!("{name} completed successfully");
-            Ok(())
+    match test_plan.run(&config, &mut shell) {
+        Ok(0) => Ok(()),
+        Ok(n) => {
+            Err(io::Error::other(format!("{} reported {n} failures", test_plan.name())).into())
         }
-        Ok(n) => Err(io::Error::other(format!("{name} reported {n} failures")).into()),
         Err(e) => {
-            log::error!("{name} did not complete");
             log::info!("Debug info: {:?}", shell.try_read_to_string());
             Err(e)
         }
     }
 }
 
-fn all_tests(config: Config, args: TestCli) -> Result<(), Error> {
-    let tests = [
-        TestPlan::SmokeTest,
-        TestPlan::FunctionalTest,
-        TestPlan::BandwidthTest,
-        TestPlan::LatencyTest,
-        TestPlan::PhyQuickTest,
-        TestPlan::SystemTest,
-    ];
-
-    let mut shell = NativeExecutor::new();
-    tests::uname(&mut shell)?;
-    shell.load_module(&args.module)?;
-
-    let mut failures = 0;
-
-    for (plan, name) in tests.iter().map(|p| (p.runner(), p.name())) {
-        let result = plan(&config, &mut shell)?;
-        match result {
-            0 => {
-                log::info!("{name} completed successfully");
-            }
-            n => {
-                log::info!("{name} reported {n} failures");
-                failures += n;
-            }
-        }
-    }
-
-    match failures {
-        0 => log::info!("All tests completed successfully"),
-        n => log::info!("All tests completed but reported {n} failures"),
-    }
-
-    Ok(())
-}
-
 fn app() -> Result<(), Error> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     let levels = [
         "error",
@@ -254,17 +202,23 @@ fn app() -> Result<(), Error> {
         None
     };
 
-    let config = read_config()?;
+    let mut config = read_config()?;
+    if let Some(adapter) = cli.adapter.take() {
+        config.adapter = adapter;
+    }
+    if let Some(module) = cli.module.take() {
+        config.module = module;
+    }
 
     let result = match cli.command {
-        Commands::SmokeTest(args) => run_test(config, args, TestPlan::SmokeTest),
+        Commands::SmokeTest => run_test(config, plans::smoke_test_new()),
         Commands::Cycle(args) => cycle(config, args),
-        Commands::FunctionalTest(args) => run_test(config, args, TestPlan::FunctionalTest),
-        Commands::BandwidthTest(args) => run_test(config, args, TestPlan::BandwidthTest),
-        Commands::LatencyTest(args) => run_test(config, args, TestPlan::LatencyTest),
-        Commands::PhyQuickTest(args) => run_test(config, args, TestPlan::PhyQuickTest),
-        Commands::SystemTest(args) => run_test(config, args, TestPlan::SystemTest),
-        Commands::AllTests(args) => all_tests(config, args),
+        Commands::FunctionalTest => run_test(config, plans::functional_test_new()),
+        Commands::BandwidthTest => run_test(config, plans::bandwidth_test_new()),
+        Commands::LatencyTest => run_test(config, plans::latency_test_new()),
+        Commands::PhyQuickTest => run_test(config, plans::phy_quick_test_new()),
+        Commands::SystemTest => run_test(config, plans::system_test_new()),
+        Commands::AllTests => run_test(config, all_test_plans()),
     };
 
     if let Some(settings) = printk {

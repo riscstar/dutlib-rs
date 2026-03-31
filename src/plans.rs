@@ -18,15 +18,15 @@ impl<T: CommandExecutor> TestCase<T> {
         let name = self.name;
         match (self.code)(config, shell) {
             Ok(0) => {
-                log::info!("{name} passed");
+                log::info!("PASSED: {name}");
                 Ok(0)
             }
             Ok(failures) => {
-                log::info!("{name} FAILED ({failures} failures)");
+                log::error!("FAILED: {name} (reported {failures} failures)");
                 Ok(failures)
             }
             Err(e) => {
-                log::info!("Fatal error running {name}: {e}");
+                log::error!("ABORTED: {name}: {e}");
                 Err(e)
             }
         }
@@ -51,12 +51,23 @@ impl<T: CommandExecutor> TestPlan<T> {
         }
     }
 
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
     pub fn test_case(&mut self, name: &'static str, code: TestFunc<T>) {
         self.plan.push(TestSet::TestCase(TestCase::new(name, code)));
     }
 
     pub fn test_plan(&mut self, plan: TestPlan<T>) {
         self.plan.push(TestSet::TestPlan(plan));
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &TestPlan<T>> {
+        self.plan.iter().filter_map(|s| match s {
+            TestSet::TestCase(_) => None,
+            TestSet::TestPlan(plan) => Some(plan),
+        })
     }
 
     pub fn run(&self, config: &Config, shell: &mut T) -> Result<u32, Error> {
@@ -71,7 +82,10 @@ impl<T: CommandExecutor> TestPlan<T> {
             }
         }
 
-        log::info!("Completed {name} plan with {failures} failures reported");
+        match failures {
+            0 => log::info!("Completed {name} plan successfully"),
+            n => log::error!("Completed {name} plan but reported {n} failures"),
+        }
         Ok(failures)
     }
 }
@@ -91,7 +105,6 @@ pub fn smoke_test_new<T: CommandExecutor>() -> TestPlan<T> {
 
 pub fn smoke_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     tests::wait_for_ipv4(config, shell)?;
-
     smoke_test_new().run(config, shell)
 }
 
