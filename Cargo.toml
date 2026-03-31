@@ -3,11 +3,14 @@ name = "dutlib"
 version = "0.1.0"
 edition = "2024"
 
+[patch.crates-io]
+expectrl = { git = "https://github.com/daniel-thompson/expectrl", branch = "main" }
+
 [dependencies]
 clap = { version = "4.5.58", features = ["derive"] }
 env_logger = "0.11.9"
 errno = "0.3.14"
-expectrl = "0.8.0"
+expectrl = { version = "0.8.0", features = ["polling"] }
 log = "0.4.29"
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
