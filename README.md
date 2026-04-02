@@ -130,7 +130,7 @@ rb3gen2-remote -q smoke-test
 ### All tests
 
 Full testing is also useful. Be aware that `rb3gen2-test` cannot run all
-available tests (in particular it cannot run MTU, EEE, VLAN or PTP tests).
+available tests (in particular it cannot run MTU, VLAN or PTP tests).
 
 Choose one of the following, as appropriate:
 
