@@ -81,12 +81,12 @@ pub struct CycleCli {
 
 fn all_test_plans() -> TestPlan<NativeExecutor> {
     let mut plan = TestPlan::new("all-tests");
-    plan.test_plan(plans::smoke_test_new());
-    plan.test_plan(plans::functional_test_new());
-    plan.test_plan(plans::bandwidth_test_new());
-    plan.test_plan(plans::latency_test_new());
-    plan.test_plan(plans::phy_quick_test_new());
-    plan.test_plan(plans::system_test_new());
+    plan.test_plan(plans::smoke_test());
+    plan.test_plan(plans::functional_test());
+    plan.test_plan(plans::bandwidth_test());
+    plan.test_plan(plans::latency_test());
+    plan.test_plan(plans::phy_quick_test());
+    plan.test_plan(plans::system_test());
 
     plan
 }
@@ -199,13 +199,13 @@ fn app() -> Result<(), Error> {
     }
 
     let result = match cli.command {
-        Commands::SmokeTest => run_test(config, plans::smoke_test_new()),
+        Commands::SmokeTest => run_test(config, plans::smoke_test()),
         Commands::Cycle(args) => cycle(config, args),
-        Commands::FunctionalTest => run_test(config, plans::functional_test_new()),
-        Commands::BandwidthTest => run_test(config, plans::bandwidth_test_new()),
-        Commands::LatencyTest => run_test(config, plans::latency_test_new()),
-        Commands::PhyQuickTest => run_test(config, plans::phy_quick_test_new()),
-        Commands::SystemTest => run_test(config, plans::system_test_new()),
+        Commands::FunctionalTest => run_test(config, plans::functional_test()),
+        Commands::BandwidthTest => run_test(config, plans::bandwidth_test()),
+        Commands::LatencyTest => run_test(config, plans::latency_test()),
+        Commands::PhyQuickTest => run_test(config, plans::phy_quick_test()),
+        Commands::SystemTest => run_test(config, plans::system_test()),
         Commands::AllTests => run_test(config, all_test_plans()),
     };
 

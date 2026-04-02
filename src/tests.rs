@@ -572,7 +572,9 @@ pub fn link_mode_and_partner_advertise_all(
         failures += 1;
     }
 
-    failures += plans::quick_test(config, shell)?;
+    wait_for_ipv4(config, shell)?;
+    failures +=
+        plans::quick_test().run_with_path(config, shell, "link_mode_and_partner_advertise_all")?;
 
     Ok(failures)
 }
@@ -613,7 +615,12 @@ fn link_partner_advertise_helper(
     }
 
     thread::sleep(Duration::from_secs(2));
-    let smoke_test_result = plans::quick_test(config, shell);
+    wait_for_ipv4(config, shell)?;
+    let smoke_test_result = plans::quick_test().run_with_path(
+        config,
+        shell,
+        &format!("link_partner_advertise_{expected_speed}baset_full"),
+    );
 
     // restore the link partner's advertisement and make sure we get the adapter back
     ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
@@ -715,7 +722,12 @@ fn link_mode_advertise_helper(
         log::info!("Link negotiated at {speed}Mb/s");
     }
 
-    let smoke_test_result = plans::quick_test(config, shell);
+    wait_for_ipv4(config, shell)?;
+    let smoke_test_result = plans::quick_test().run_with_path(
+        config,
+        shell,
+        &format!("link_mode_advertise_{expected_speed}baset_full"),
+    );
 
     // restore the link partner's advertisement and make sure we get the adapter back
     let restored_info = ethtool::advertise(shell, adapter, u64::MAX)?;
@@ -777,7 +789,8 @@ pub fn link_mode_advertise_all(
         failures += 1;
     }
 
-    failures += plans::quick_test(config, shell)?;
+    wait_for_ipv4(config, shell)?;
+    failures += plans::quick_test().run_with_path(config, shell, "link_mode_advertise_all")?;
 
     Ok(failures)
 }
@@ -1311,7 +1324,8 @@ pub fn suspend_resume(config: &Config, shell: &mut impl CommandExecutor) -> Resu
     // wait for the link to come up but there is only a brief interruption to
     // the link so there should be no need for a new DHCP lease.
     thread::sleep(Duration::from_secs(5));
-    failures += plans::quick_test(config, shell)?;
+    wait_for_ipv4(config, shell)?;
+    failures += plans::quick_test().run_with_path(config, shell, "suspend_resume")?;
 
     Ok(failures)
 }
@@ -1340,7 +1354,8 @@ pub fn disable_checksum_offload(
     failures += iperf3_bidir_tuneable(config, shell, tx_thresh, rx_thresh)?;
 
     shell.cmd(format!("ethtool -K {adapter} tx on rx on"))?;
-    failures += plans::quick_test(config, shell)?;
+    wait_for_ipv4(config, shell)?;
+    failures += plans::quick_test().run_with_path(config, shell, "disable_checksum_offload")?;
 
     Ok(failures)
 }
@@ -1368,7 +1383,8 @@ pub fn disable_tso(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     failures += iperf3_bidir_tuneable(config, shell, tx_thresh, rx_thresh)?;
 
     shell.cmd(format!("ethtool -K {adapter} tso on"))?;
-    failures += plans::quick_test(config, shell)?;
+    wait_for_ipv4(config, shell)?;
+    failures += plans::quick_test().run_with_path(config, shell, "disable_tso")?;
 
     Ok(failures)
 }
@@ -1423,7 +1439,8 @@ pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Err
     }
 
     // Check everything still works
-    failures += plans::quick_test(config, shell)?;
+    wait_for_ipv4(config, shell)?;
+    failures += plans::quick_test().run_with_path(config, shell, "eee")?;
 
     // Re-enable EEE
     ethtool::cmd_and_wait_link_up(shell, adapter, "--set-eee <ADAPTER> eee on")?;
@@ -1444,15 +1461,14 @@ pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Err
 pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
 
-    // TODO: This needs to become a partner test since we have to force our
-    //       partner to enable EEE (I226 via NetworkManager is off by default)
-
     let adapter = &config.adapter;
     let ipaddr = &config.ipaddr;
     let mut partner = SudoExecutor::new();
     let partner_adapter = &config.partner_adapter;
 
+    ip::cmd_and_wait_link_up(&mut partner, partner_adapter, "link set <ADAPTER> mtu 1000")?;
     ip::cmd_and_wait_link_up(shell, adapter, "link set <ADAPTER> mtu 1000")?;
+    wait_for_ipv4(config, shell)?;
     failures += ping_helper("mtu@1000", shell, ipaddr, "-c 10 -i 0.1 -s 972 -M do")?;
     let reply = ping_raw(shell, ipaddr, "-c 10 -i 0.1 -s 1000 -M do")?;
     if !reply.contains("100% packet loss") {
@@ -1460,12 +1476,13 @@ pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Err
         failures += 1;
     }
 
-    ip::cmd_and_wait_link_up(&mut partner, partner_adapter, "link set <ADAPTER> mtu 3000")?;
-    ip::cmd_and_wait_link_up(shell, adapter, "link set <ADAPTER> mtu 3000")?;
-    failures += ping_helper("mtu@3000", shell, ipaddr, "-c 10 -i 0.1 -s 2972 -M do")?;
-    let reply = ping_raw(shell, ipaddr, "-c 10 -i 0.1 -s 3000 -M do")?;
+    ip::cmd_and_wait_link_up(&mut partner, partner_adapter, "link set <ADAPTER> mtu 2000")?;
+    ip::cmd_and_wait_link_up(shell, adapter, "link set <ADAPTER> mtu 2000")?;
+    wait_for_ipv4(config, shell)?;
+    failures += ping_helper("mtu@2000", shell, ipaddr, "-c 10 -i 0.1 -s 1972 -M do")?;
+    let reply = ping_raw(shell, ipaddr, "-c 10 -i 0.1 -s 2000 -M do")?;
     if !reply.contains("100% packet loss") {
-        log::error!("mtu@1000: Max message size not enforced properly");
+        log::error!("mtu@2000: Max message size not enforced properly");
         failures += 1;
     }
 
@@ -1507,7 +1524,8 @@ pub fn vlan_smoke_test(config: &Config, shell: &mut impl CommandExecutor) -> Res
     let mut vlan_config = config.clone();
     vlan_config.ipaddr = "192.168.20.2".to_string();
 
-    let result = plans::smoke_test(&vlan_config, shell);
+    wait_for_ipv4(config, shell)?;
+    let result = plans::smoke_test().run_with_path(config, shell, "vlan");
 
     // Cleanup
     ip::cmd(shell, adapter, "link del link <ADAPTER> name <ADAPTER>.8")?;

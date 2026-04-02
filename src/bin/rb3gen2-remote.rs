@@ -28,55 +28,66 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// Name of the network driver module to be loaded
-    #[arg(short, long)]
-    module: Option<String>,
-
     /// Name of the device (as it appears in `ip addr`)
     #[arg(short, long)]
     adapter: Option<String>,
+
+    /// Name of the network driver module to be loaded
+    #[arg(short, long)]
+    module: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Reboot the target (using the least aggressive means necessary)
-    Reboot,
+    Reboot(RebootCli),
 
     /// Run a simple smoke test
-    SmokeTest,
+    SmokeTest(RunTestCli),
 
     /// Boot cycling test (subset of smoke test) to estimate boot reliability
     BootCycle(BootCycleCli),
 
     /// Functional testing (inc. data integrity)
-    FunctionalTest,
+    FunctionalTest(RunTestCli),
 
     /// Bandwidth testing
-    BandwidthTest,
+    BandwidthTest(RunTestCli),
 
     /// Latency testing (using ping)
-    LatencyTest,
+    LatencyTest(RunTestCli),
 
     /// PHY Auto-Negotiation testing
-    PhyAnTest,
+    PhyAnTest(RunTestCli),
 
     /// PHY Auto-Negotiation testing covering only local advertisements
-    PhyQuickTest,
+    PhyQuickTest(RunTestCli),
 
     /// System integration testing (including suspend/resume tests)
-    SystemTest,
+    SystemTest(RunTestCli),
 
     /// Run tests that require the partner to be configures (requires sudo prep)
-    PartnerTest,
+    PartnerTest(RunTestCli),
 
     /// Run all tests that do not require the board to be rebooted.
-    AllTests,
+    AllTests(AllTestsCli),
 }
 
-fn reboot(config: Config) -> Result<(), Error> {
+#[derive(Debug, Parser)]
+pub struct RebootCli {
+    /// Wait for the reboot to complete before exiting
+    #[arg(short, long)]
+    wait: bool,
+}
+
+fn reboot(config: Config, args: RebootCli) -> Result<(), Error> {
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     let mut console = board.console()?;
-    console.cmd("reboot")?;
+    let _ = board.reboot(console);
+    if args.wait {
+        console = board.console()?;
+        tests::uname(&mut console)?;
+    }
 
     Ok(())
 }
@@ -102,14 +113,14 @@ pub struct BootCycleCli {
 
 fn all_test_plans() -> TestPlan<ReplSession<OsSession>> {
     let mut plan = TestPlan::new("all-tests");
-    plan.test_plan(plans::smoke_test_new());
-    plan.test_plan(plans::functional_test_new());
-    plan.test_plan(plans::bandwidth_test_new());
-    plan.test_plan(plans::latency_test_new());
-    plan.test_plan(plans::phy_an_test_new());
-    plan.test_plan(plans::phy_quick_test_new());
-    plan.test_plan(plans::system_test_new());
-    plan.test_plan(plans::partner_test_new());
+    plan.test_plan(plans::smoke_test());
+    plan.test_plan(plans::functional_test());
+    plan.test_plan(plans::bandwidth_test());
+    plan.test_plan(plans::latency_test());
+    plan.test_plan(plans::phy_an_test());
+    plan.test_plan(plans::phy_quick_test());
+    plan.test_plan(plans::system_test());
+    plan.test_plan(plans::partner_test());
 
     plan
 }
@@ -174,11 +185,37 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test(config: Config, test_plan: TestPlan<ReplSession<OsSession>>) -> Result<(), Error> {
+#[derive(Debug, Parser)]
+pub struct RunTestCli {
+    /// Skip all tests that do not match the selection
+    #[arg(short, long)]
+    select: Option<String>,
+
+    /// Reboot before running any tests
+    #[arg(short, long)]
+    reboot: bool,
+}
+
+fn run_test(
+    config: Config,
+    args: RunTestCli,
+    test_plan: TestPlan<ReplSession<OsSession>>,
+) -> Result<(), Error> {
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
+    if args.reboot {
+        let console = board.console()?;
+        let _ = board.reboot(console);
+    }
     let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
     tests::wait_for_ipv4(&config, &mut console)?;
+
+    // Filter if needed
+    let test_plan = if let Some(select) = &args.select {
+        test_plan.filter(|f| f.contains(select.as_str()))
+    } else {
+        test_plan
+    };
 
     match test_plan.run(&config, &mut console) {
         Ok(0) => Ok(()),
@@ -192,9 +229,19 @@ fn run_test(config: Config, test_plan: TestPlan<ReplSession<OsSession>>) -> Resu
     }
 }
 
-fn all_tests(config: Config) -> Result<(), Error> {
+#[derive(Debug, Parser)]
+pub struct AllTestsCli {
+    /// Reboot before running any tests
+    #[arg(short, long)]
+    reboot: bool,
+}
+fn all_tests(config: Config, args: AllTestsCli) -> Result<(), Error> {
     let plan = all_test_plans();
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
+    if args.reboot {
+        let console = board.console()?;
+        let _ = board.reboot(console);
+    }
     let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
     tests::wait_for_ipv4(&config, &mut console)?;
@@ -257,17 +304,17 @@ fn app() -> Result<(), Error> {
     }
 
     match cli.command {
-        Commands::Reboot => reboot(config),
-        Commands::SmokeTest => run_test(config, plans::smoke_test_new()),
+        Commands::Reboot(args) => reboot(config, args),
+        Commands::SmokeTest(args) => run_test(config, args, plans::smoke_test()),
         Commands::BootCycle(args) => boot_cycle(config, args),
-        Commands::FunctionalTest => run_test(config, plans::functional_test_new()),
-        Commands::BandwidthTest => run_test(config, plans::bandwidth_test_new()),
-        Commands::LatencyTest => run_test(config, plans::latency_test_new()),
-        Commands::PhyAnTest => run_test(config, plans::phy_an_test_new()),
-        Commands::PhyQuickTest => run_test(config, plans::phy_quick_test_new()),
-        Commands::SystemTest => run_test(config, plans::system_test_new()),
-        Commands::PartnerTest => run_test(config, plans::partner_test_new()),
-        Commands::AllTests => all_tests(config),
+        Commands::FunctionalTest(args) => run_test(config, args, plans::functional_test()),
+        Commands::BandwidthTest(args) => run_test(config, args, plans::bandwidth_test()),
+        Commands::LatencyTest(args) => run_test(config, args, plans::latency_test()),
+        Commands::PhyAnTest(args) => run_test(config, args, plans::phy_an_test()),
+        Commands::PhyQuickTest(args) => run_test(config, args, plans::phy_quick_test()),
+        Commands::SystemTest(args) => run_test(config, args, plans::system_test()),
+        Commands::PartnerTest(args) => run_test(config, args, plans::partner_test()),
+        Commands::AllTests(args) => all_tests(config, args),
     }
 }
 
