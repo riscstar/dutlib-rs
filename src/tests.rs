@@ -325,7 +325,7 @@ pub fn verify_log_messages(
         .unwrap()
     });
 
-    let dmesg = shell.cmd("dmesg --color=never --read-clear")?;
+    let dmesg = shell.cmd("dmesg --color=never")?;
 
     for ln in dmesg.lines() {
         // Check that the PHY is not in polling mode
@@ -421,6 +421,11 @@ pub fn verify_log_messages(
 
     if failures >= 1 {
         log::info!("Kernel log review failed\n{dmesg}");
+
+        // We don't really want future calls to verify_log_messages() to fail
+        // so we'd better clear the dmesg buffer (this will discard a couple
+        // of messages but it better than having duplicated errors).
+        let _ = shell.cmd("dmesg --clear")?;
     }
 
     Ok(failures)

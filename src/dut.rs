@@ -209,7 +209,6 @@ impl DeviceUnderTest {
                 return self.console_with_module(module_name);
             }
 
-            shell.cmd("dmesg -C")?;
             shell.cmd(format!("modprobe {module_name}"))?;
         }
 
