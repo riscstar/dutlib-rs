@@ -268,11 +268,12 @@ fn all_tests(config: Config, args: AllTestsCli) -> Result<(), Error> {
     }
 
     match failures {
-        0 => log::info!("All tests completed successfully"),
-        n => log::error!("All tests completed but reported {n} failures"),
+        0 => {
+            log::info!("All tests completed successfully");
+            Ok(())
+        }
+        n => Err(io::Error::other(format!("All tests completed but reported {n} failures")).into()),
     }
-
-    Ok(())
 }
 
 fn app() -> Result<(), Error> {
