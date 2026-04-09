@@ -364,10 +364,13 @@ pub fn verify_log_messages(
             // [  749.360186] pcieport 0001:01:00.0: PCIe Bus Error: severity=Correctable, type=Data Link Layer, (Transmitter ID)
             // [  749.372161] pcieport 0001:01:00.0:   device [1179:0623] error status/mask=00001000/00006000
             // [  749.381840] pcieport 0001:01:00.0:    [12] Timeouts
+            // [            ] pcieport 0001:01:00.0: AER:   Error of this Agent is reported first
             if !lower.contains("warn")
                 && !lower.contains("bug")
                 && lower.contains("pcieport")
-                && (lower.contains("correctable") || lower.contains("error status/mask="))
+                && (lower.contains("correctable")
+                    || lower.contains("error status/mask=")
+                    || lower.contains("error of this agent reported first"))
             {
                 continue;
             }
