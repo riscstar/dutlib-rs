@@ -939,8 +939,10 @@ pub fn iperf3_intervals_bidir(
     // RX per interval  1099.5      44%     42%
     // TX overall       2341.2      94%     89%
     // RX overall       1561.6      62%     59%
-    let tx_threshold = speed_mbps * 0.89;
-    let rx_threshold = speed_mbps * 0.6;
+    let tx_threshold_warn = speed_mbps * 0.89;
+    let rx_threshold_warn = speed_mbps * 0.6;
+    let tx_threshold_error = tx_threshold_warn * 0.5;
+    let rx_threshold_error = rx_threshold_warn * 0.5;
 
     for (i, (tx, rx)) in stats
         .intervals
@@ -948,11 +950,15 @@ pub fn iperf3_intervals_bidir(
         .map(|interval| (get_mbps(interval.sum), get_mbps(interval.sum_bidir_reverse)))
         .enumerate()
     {
-        if tx < tx_threshold || rx < rx_threshold {
-            log::warn!(
+        if tx < tx_threshold_error || rx < rx_threshold_error {
+            log::error!(
                 "iperf3_intervals_bidir: interval #{i}: Network performance is too slow: TX {tx:0.1}, RX {rx:0.1}"
             );
             failures += 1;
+        } else if tx < tx_threshold_warn || rx < rx_threshold_warn {
+            log::warn!(
+                "iperf3_intervals_bidir: interval #{i}: Network performance is too slow: TX {tx:0.1}, RX {rx:0.1}"
+            );
         } else {
             log::info!("iperf3_intervals_bidir: interval #{i}: TX {tx:0.1}, RX {rx:0.1}");
         }
@@ -963,15 +969,23 @@ pub fn iperf3_intervals_bidir(
     let tx_them = get_mbps(stats.end.sum_sent_bidir_reverse);
     let rx_us = get_mbps(stats.end.sum_received_bidir_reverse);
 
-    if tx_us < tx_threshold
-        || rx_them < tx_threshold
-        || rx_us < rx_threshold
-        || tx_them < rx_threshold
+    if tx_us < tx_threshold_error
+        || rx_them < tx_threshold_error
+        || rx_us < rx_threshold_error
+        || tx_them < rx_threshold_error
+    {
+        log::error!(
+            "iperf3_intervals_bidir: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+        failures += 1;
+    } else if tx_us < tx_threshold_warn
+        || rx_them < tx_threshold_warn
+        || rx_us < rx_threshold_warn
+        || tx_them < rx_threshold_warn
     {
         log::warn!(
             "iperf3_intervals_bidir: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
         );
-        failures += 1;
     } else {
         log::info!(
             "iperf3_intervals_bidir: Overall: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
@@ -995,7 +1009,8 @@ pub fn iperf3_intervals_tx(
     //                  Mb/s        BW      BW * 0.95
     // TX per interval  2350.5      94%     89%
     // TX overall       2348.4      94%     89%
-    let tx_threshold = speed_mbps * 0.89;
+    let tx_threshold_warn = speed_mbps * 0.89;
+    let tx_threshold_error = tx_threshold_warn * 0.5;
 
     for (i, tx) in stats
         .intervals
@@ -1003,11 +1018,15 @@ pub fn iperf3_intervals_tx(
         .map(|interval| get_mbps(interval.sum))
         .enumerate()
     {
-        if tx < tx_threshold {
-            log::warn!(
+        if tx < tx_threshold_error {
+            log::error!(
                 "iperf3_intervals_tx: interval #{i}: Network performance is too slow: TX {tx:0.1}"
             );
             failures += 1;
+        } else if tx < tx_threshold_warn {
+            log::warn!(
+                "iperf3_intervals_tx: interval #{i}: Network performance is too slow: TX {tx:0.1}"
+            );
         } else {
             log::info!("iperf3_intervals_tx: interval #{i}: TX {tx:0.1}");
         }
@@ -1016,11 +1035,15 @@ pub fn iperf3_intervals_tx(
     let tx_us = get_mbps(stats.end.sum_sent);
     let rx_them = get_mbps(stats.end.sum_received);
 
-    if tx_us < tx_threshold || rx_them < tx_threshold {
-        log::warn!(
+    if tx_us < tx_threshold_error || rx_them < tx_threshold_error {
+        log::error!(
             "iperf3_intervals_tx: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1})"
         );
         failures += 1;
+    } else if tx_us < tx_threshold_warn || rx_them < tx_threshold_warn {
+        log::warn!(
+            "iperf3_intervals_tx: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1})"
+        );
     } else {
         log::info!("iperf3_intervals_tx: Overall: TX {tx_us:0.1} ({rx_them:0.1})");
     }
@@ -1042,7 +1065,8 @@ pub fn iperf3_intervals_rx(
     //                  Mb/s        BW      BW * 0.95
     // RX per interval  126.1       5%      5%
     // RX overall       136.3       5%      5%
-    let rx_threshold = speed_mbps * 0.8;
+    let rx_threshold_warn = speed_mbps * 0.8;
+    let rx_threshold_error = rx_threshold_warn * 0.5;
 
     for (i, rx) in stats
         .intervals
@@ -1050,11 +1074,15 @@ pub fn iperf3_intervals_rx(
         .map(|interval| get_mbps(interval.sum))
         .enumerate()
     {
-        if rx < rx_threshold {
-            log::warn!(
+        if rx < rx_threshold_error {
+            log::error!(
                 "iperf3_intervals_rx: interval #{i}: Network performance is too slow: RX {rx:0.1}"
             );
             failures += 1;
+        } else if rx < rx_threshold_warn {
+            log::warn!(
+                "iperf3_intervals_rx: interval #{i}: Network performance is too slow: RX {rx:0.1}"
+            );
         } else {
             log::info!("iperf3_intervals_rx: interval #{i}: RX {rx:0.1}");
         }
@@ -1063,11 +1091,15 @@ pub fn iperf3_intervals_rx(
     let tx_them = get_mbps(stats.end.sum_sent);
     let rx_us = get_mbps(stats.end.sum_received);
 
-    if rx_us < rx_threshold || tx_them < rx_threshold {
-        log::warn!(
+    if rx_us < rx_threshold_error || tx_them < rx_threshold_error {
+        log::error!(
             "iperf3_intervals_rx: Overall: Network performance is too slow: RX {rx_us:0.1} ({tx_them:0.1})"
         );
         failures += 1;
+    } else if rx_us < rx_threshold_warn || tx_them < rx_threshold_warn {
+        log::warn!(
+            "iperf3_intervals_rx: Overall: Network performance is too slow: RX {rx_us:0.1} ({tx_them:0.1})"
+        );
     } else {
         log::info!("iperf3_intervals_rx: Overall: RX {rx_us:0.1} ({tx_them:0.1})");
     }
@@ -1096,15 +1128,21 @@ pub fn iperf3_udp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Re
     //                  %       % * 1.05
     // TX lost packets  5.8%    6.1%
     // RX lost packets  4.2%    4.4%
-    let tx_threshold = 5.0;
-    let rx_threshold = 4.4;
+    let tx_threshold_warn = 5.0;
+    let tx_threshold_error = tx_threshold_warn * 2.0;
+    let rx_threshold_warn = 4.4;
+    // Some vendor kernels (esp. v6.6 has huge packet loss) depending on the
+    // PAUSE tuning
+    let rx_threshold_error = rx_threshold_warn * 10.0;
 
     let rx = get_lost_percent(stats.end.streams[0].udp);
     let tx = get_lost_percent(stats.end.streams[1].udp);
 
-    if rx > rx_threshold || tx > tx_threshold {
-        log::warn!("iperf3_udp_bidir: Packet loss too high: TX {tx:0.1}, RX {rx:0.1}");
+    if rx > rx_threshold_error || tx > tx_threshold_error {
+        log::error!("iperf3_udp_bidir: Packet loss too high: TX {tx:0.1}, RX {rx:0.1}");
         failures += 1;
+    } else if rx > rx_threshold_warn || tx > tx_threshold_warn {
+        log::warn!("iperf3_udp_bidir: Packet loss too high: TX {tx:0.1}, RX {rx:0.1}");
     } else {
         log::info!("iperf3_udp_bidir: Packet loss OK: TX {tx:0.1}, RX {rx:0.1}");
     }
@@ -1190,9 +1228,12 @@ pub fn iperf3_x16_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Re
     // Per interval     176.3       56%     54%
     // TX overall       2342.3      94%     89%
     // RX overall       1541.8      62%     59%
-    let stream_threshold = (speed_mbps * 0.54) / 8.0;
-    let tx_threshold = speed_mbps * 0.89;
-    let rx_threshold = speed_mbps * 0.59;
+    let stream_threshold_warn = (speed_mbps * 0.54) / 8.0;
+    let stream_threshold_error = stream_threshold_warn * 0.5;
+    let tx_threshold_warn = speed_mbps * 0.89;
+    let tx_threshold_error = tx_threshold_warn * 0.5;
+    let rx_threshold_warn = speed_mbps * 0.59;
+    let rx_threshold_error = rx_threshold_warn * 0.5;
 
     for (i, (sender, receiver)) in stats
         .end
@@ -1205,11 +1246,15 @@ pub fn iperf3_x16_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Re
         // difficult to figure out which sockets are used to TX and which for
         // RX (which whether it is us or them that is the sender). We therefore
         // compare both values against a common minimum threshold.
-        if sender < stream_threshold || receiver < stream_threshold {
-            log::warn!(
+        if sender < stream_threshold_error || receiver < stream_threshold_error {
+            log::error!(
                 "iperf3_x16_bidir: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
             );
             failures += 1;
+        } else if sender < stream_threshold_warn || receiver < stream_threshold_warn {
+            log::warn!(
+                "iperf3_x16_bidir: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
+            );
         } else {
             log::info!("iperf3_x16_bidir: stream #{i}: Send {sender:0.1}, Recv {receiver:0.1}");
         }
@@ -1220,15 +1265,23 @@ pub fn iperf3_x16_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Re
     let tx_them = get_mbps(stats.end.sum_sent_bidir_reverse);
     let rx_us = get_mbps(stats.end.sum_received_bidir_reverse);
 
-    if tx_us < tx_threshold
-        || rx_them < tx_threshold
-        || rx_us < rx_threshold
-        || tx_them < rx_threshold
+    if tx_us < tx_threshold_error
+        || rx_them < tx_threshold_error
+        || rx_us < rx_threshold_error
+        || tx_them < rx_threshold_error
+    {
+        log::error!(
+            "iperf3_x16_bidir: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
+        );
+        failures += 1;
+    } else if tx_us < tx_threshold_warn
+        || rx_them < tx_threshold_warn
+        || rx_us < rx_threshold_warn
+        || tx_them < rx_threshold_warn
     {
         log::warn!(
             "iperf3_x16_bidir: Overall: Network performance is too slow: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
         );
-        failures += 1;
     } else {
         log::info!(
             "iperf3_x16_bidir: Overall: TX {tx_us:0.1} ({rx_them:0.1}), RX {rx_us:0.1} ({tx_them:0.1})"
@@ -1249,7 +1302,8 @@ pub fn iperf3_x16_tx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     //                  Mb/s        BW      BW * 0.95
     // Per interval     142.2       91%     86%
     // TX overall       2351.0      94%     89%
-    let stream_threshold = (speed_mbps * 0.86) / 16.0;
+    let stream_threshold_warn = (speed_mbps * 0.86) / 16.0;
+    let stream_threshold_error = stream_threshold_warn * 0.5;
     let tx_threshold = speed_mbps * 0.89;
 
     for (i, (sender, receiver)) in stats
@@ -1259,11 +1313,15 @@ pub fn iperf3_x16_tx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
         .map(|stream| (get_mbps(stream.sender), get_mbps(stream.receiver)))
         .enumerate()
     {
-        if sender < stream_threshold || receiver < stream_threshold {
-            log::warn!(
+        if sender < stream_threshold_error || receiver < stream_threshold_error {
+            log::error!(
                 "iperf3_x16_tx: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
             );
             failures += 1;
+        } else if sender < stream_threshold_warn || receiver < stream_threshold_warn {
+            log::warn!(
+                "iperf3_x16_tx: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
+            );
         } else {
             log::info!("iperf3_x16_tx: stream #{i}: Send {sender:0.1}, Recv {receiver:0.1}");
         }
@@ -1295,7 +1353,8 @@ pub fn iperf3_x16_rx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     //                  Mb/s        BW      BW * 0.95
     // Per interval     62.1        40%     38%
     // RX overall       1167.6      47%     44%
-    let stream_threshold = (speed_mbps * 0.6) / 16.0;
+    let stream_threshold_warn = (speed_mbps * 0.6) / 16.0;
+    let stream_threshold_error = stream_threshold_warn * 0.33;
     let rx_threshold = speed_mbps * 0.6;
 
     for (i, (sender, receiver)) in stats
@@ -1305,11 +1364,15 @@ pub fn iperf3_x16_rx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
         .map(|stream| (get_mbps(stream.sender), get_mbps(stream.receiver)))
         .enumerate()
     {
-        if sender < stream_threshold || receiver < stream_threshold {
-            log::warn!(
+        if sender < stream_threshold_error || receiver < stream_threshold_error {
+            log::error!(
                 "iperf3_x16_rx: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
             );
             failures += 1;
+        } else if sender < stream_threshold_warn || receiver < stream_threshold_warn {
+            log::warn!(
+                "iperf3_x16_rx: stream #{i}: Network bandwidth is not fairly allocated: Send {sender:0.1}, Recv {receiver:0.1}"
+            );
         } else {
             log::info!("iperf3_x16_rx: stream #{i}: Send {sender:0.1}, Recv {receiver:0.1}");
         }
