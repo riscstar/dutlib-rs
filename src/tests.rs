@@ -325,7 +325,8 @@ pub fn verify_log_messages(
         .unwrap()
     });
 
-    let dmesg = shell.cmd("dmesg --color=never")?;
+    // Very large logs take a long time to transfer at 115200 baud!
+    let dmesg = shell.with_timeout_secs(30, |sh| sh.cmd("dmesg --color=never"))?;
 
     for ln in dmesg.lines() {
         // Check that the PHY is not in polling mode
