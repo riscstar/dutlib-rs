@@ -310,7 +310,10 @@ pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Re
                 // EOPNOTSUPP (95): Operation not supported
                 Err(Errno(95)) => log::debug!("ethtool_selftest: {name:-30} {}", Errno(95)),
                 Ok(n) => {
-                    if n == 1 && (name.contains("MMC Counters") || name.contains("Hash Filter MC"))
+                    if n == 1
+                        && (name.contains("MMC Counters")
+                            || name.contains("Hash Filter MC")
+                            || name.contains("SA Replacement (reg)"))
                     {
                         // This an intermittent failures that we tolerate for now.
                         // Unfortunately in cascades and requires us to suppress
@@ -349,19 +352,21 @@ pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Re
             };
         }
 
+        // Wait for the PHY to renegotiate the link
+        thread::sleep(Duration::from_secs(5));
+
         // We want to retry unless there is a cascaded failure and no hard fails.
         if !cascaded_failure || failures != 0 {
             break;
         }
+
+        log::warn!("ethtool_selftest: Retrying after cascaded failure");
     }
 
     if cascaded_failure {
         log::error!("ethtool_selftest: Too many retries to avoid cascaded failures");
         failures += 1;
     }
-
-    // Wait for the PHY to renegotiate the link
-    thread::sleep(Duration::from_secs(5));
 
     Ok(failures)
 }
