@@ -1,4 +1,11 @@
-use std::{io, process::Command, sync::LazyLock, thread, time::Duration};
+use std::{
+    fs::{self},
+    io::{self},
+    process::Command,
+    sync::LazyLock,
+    thread,
+    time::Duration,
+};
 
 use errno::Errno;
 use expectrl::Error;
@@ -836,6 +843,7 @@ pub fn link_mode_advertise_10baset_full(
 pub struct IperfResult {
     pub intervals: Vec<Interval>,
     pub end: End,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -847,6 +855,7 @@ pub struct Interval {
 
 #[derive(Debug, Deserialize)]
 pub struct End {
+    #[serde(default)]
     pub streams: Vec<EndStreams>,
     pub sum: Option<StreamStats>,
     pub sum_sent: Option<StreamStats>,
@@ -895,12 +904,23 @@ fn iperf3_new_helper(
     // We need to skip these to ensure the JSON parses correctly.
     let offset = reply.find("{").unwrap_or(0);
 
-    let json = serde_json::from_str(&reply[offset..]).map_err(|e| {
-        log::error!("{e}");
-        io::Error::other("Cannot parse JSON from iperf3")
-    })?;
-
-    Ok(json)
+    match serde_json::from_str::<IperfResult>(&reply[offset..]) {
+        Ok(json) => {
+            if let Some(error) = json.error {
+                Err(io::Error::other(format!("iperf3 reported error: {error}")).into())
+            } else {
+                Ok(json)
+            }
+        }
+        Err(e) => {
+            log::error!("{e}");
+            fs::write("iperf3.json", &reply[offset..])?;
+            Err(
+                io::Error::other("Cannot parse JSON from iperf3 (see iperf3.json for details)")
+                    .into(),
+            )
+        }
+    }
 }
 
 pub fn iperf3_intervals_bidir(
