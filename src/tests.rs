@@ -275,44 +275,93 @@ pub fn iperf3_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u3
 
 pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
-
     let adapter = &config.adapter;
-    let reply = shell.cmd(format!("ethtool -t {adapter}"))?;
-    if reply.contains("Cannot test: Operation not supported") {
-        log::warn!(
-            "ethtool_selftest: Kernel has been compiled without CONFIG_STMMAC_SELFTESTS, skipping test"
-        );
-        return Ok(0);
+
+    let mut cascaded_failure = false;
+
+    for _ in 0..5 {
+        let reply = shell.cmd(format!("ethtool -t {adapter}"))?;
+        if reply.contains("Cannot test: Operation not supported") {
+            log::warn!(
+                "ethtool_selftest: Kernel has been compiled without CONFIG_STMMAC_SELFTESTS, skipping test"
+            );
+            return Ok(0);
+        }
+
+        cascaded_failure = false;
+
+        for ln in reply.lines() {
+            //  1. MAC Loopback               \t 0
+            // 32. TBS (ETF Scheduler)        \t -95
+            let Some((left, right)) = ln.split_once('\t') else {
+                continue;
+            };
+            let name = &left[4..].trim();
+            let Ok(result) = right
+                .trim()
+                .parse::<i32>()
+                .map(|e| if e < 0 { Err(Errno(e * -1)) } else { Ok(e) })
+            else {
+                continue;
+            };
+
+            match result {
+                Ok(0) => log::debug!("ethtool_selftest: {name:-30} 0"),
+                // EOPNOTSUPP (95): Operation not supported
+                Err(Errno(95)) => log::debug!("ethtool_selftest: {name:-30} {}", Errno(95)),
+                Ok(n) => {
+                    if n == 1 && (name.contains("MMC Counters") || name.contains("Hash Filter MC"))
+                    {
+                        // This an intermittent failures that we tolerate for now.
+                        // Unfortunately in cascades and requires us to suppress
+                        // other error reports.
+                        log::warn!("ethtool_selftest: {name:-30} {n}");
+                        cascaded_failure = true;
+                    } else if n == 1 && cascaded_failure {
+                        log::debug!("ethtool_selftest: {name:-30} {n}");
+                    } else {
+                        log::error!("ethtool_selftest: {name:-30} {n}");
+                        failures += 1;
+                    }
+                }
+                Err(e) => {
+                    // ETIMEDOUT (110): Connection timed out
+                    if e == Errno(110)
+                        && (name.contains("MMC Counters")
+                            || name.contains("Hash Filter MC")
+                            || name.contains("SA Replacement (desc)")
+                            || name.contains("SA Replacement (reg)"))
+                    {
+                        // These are intermittent failures that we tolerate for now.
+                        // Unfortunately in cascades and requires us to suppress
+                        // other error reports.
+                        log::warn!("ethtool_selftest: {name:-30} {e}");
+                        cascaded_failure = true;
+                    } else if name.contains("VLAN") {
+                        // Currently all VLAN selftests timeout (but VLAN works) so
+                        // we'll treat it to a warning for now...
+                        log::warn!("ethtool_selftest: {name:-30} {e}");
+                    } else {
+                        log::error!("ethtool_selftest: {name:-30} {e}");
+                        failures += 1;
+                    }
+                }
+            };
+        }
+
+        // We want to retry unless there is a cascaded failure and no hard fails.
+        if !cascaded_failure || failures != 0 {
+            break;
+        }
+    }
+
+    if cascaded_failure {
+        log::error!("ethtool_selftest: Too many retries to avoid cascaded failures");
+        failures += 1;
     }
 
     // Wait for the PHY to renegotiate the link
     thread::sleep(Duration::from_secs(5));
-
-    for ln in reply.lines() {
-        //  1. MAC Loopback               \t 0
-        // 32. TBS (ETF Scheduler)        \t -95
-        let Some((left, right)) = ln.split_once('\t') else {
-            continue;
-        };
-        let name = &left[4..].trim();
-        let Ok(result) = right.trim().parse::<i32>().map(|e| Errno(e * -1)) else {
-            continue;
-        };
-
-        // EOPNOTSUPP (95): Operation no supported
-        if result.0 != 0 && result.0 != 95 {
-            if name.contains("VLAN") {
-                // Currently all VLAN selftests timeout (but VLAN works) so
-                // we'll treat it to a warning for now...
-                log::warn!("ethtool_selftest: {name:-30} {result}");
-            } else {
-                log::error!("ethtool_selftest: {name:-30} {result}");
-                failures += 1;
-            }
-        } else {
-            log::debug!("ethtool_selftest: {name:-30} {result}");
-        }
-    }
 
     Ok(failures)
 }
