@@ -109,6 +109,10 @@ pub struct BootCycleCli {
     /// Choose which test plan to cycle through
     #[arg(short, long, default_value = "smoke-test")]
     plan: String,
+
+    /// Skip all tests that do not match the selection
+    #[arg(short, long)]
+    select: Option<String>,
 }
 
 fn all_test_plans() -> TestPlan<ReplSession<OsSession>> {
@@ -128,7 +132,7 @@ fn all_test_plans() -> TestPlan<ReplSession<OsSession>> {
 fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     let all_plans = all_test_plans();
     let mut plan = None;
-    for candidate in all_plans.iter() {
+    for candidate in all_plans.into_iter() {
         if args.plan == candidate.name() {
             plan = Some(candidate);
             break;
@@ -137,6 +141,13 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     let Some(plan) = plan else {
         log::error!("Unknown test plan: {}", args.plan);
         return Ok(());
+    };
+
+    // Filter if needed
+    let plan = if let Some(select) = &args.select {
+        plan.filter(|f| f.contains(select.as_str()))
+    } else {
+        plan
     };
 
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);

@@ -40,28 +40,28 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Run a simple smoke test
-    SmokeTest,
+    SmokeTest(RunTestCli),
 
     /// Cycling test to estimate test reliability
     Cycle(CycleCli),
 
     /// Functional testing (inc. data integrity)
-    FunctionalTest,
+    FunctionalTest(RunTestCli),
 
     /// Bandwidth testing
-    BandwidthTest,
+    BandwidthTest(RunTestCli),
 
     /// Latency testing (using ping)
-    LatencyTest,
+    LatencyTest(RunTestCli),
 
     /// PHY Auto-Negotiation testing covering only local advertisements
-    PhyQuickTest,
+    PhyQuickTest(RunTestCli),
 
     /// System integration testing (including suspend/resume tests)
-    SystemTest,
+    SystemTest(RunTestCli),
 
     /// Run all tests that do not require the board to be rebooted.
-    AllTests,
+    AllTests(RunTestCli),
 }
 
 #[derive(Debug, Parser)]
@@ -77,6 +77,10 @@ pub struct CycleCli {
     /// Choose which test plan to cycle through
     #[arg(short, long, default_value = "smoke-test")]
     plan: String,
+
+    /// Skip all tests that do not match the selection
+    #[arg(short, long)]
+    select: Option<String>,
 }
 
 fn all_test_plans() -> TestPlan<NativeExecutor> {
@@ -94,7 +98,7 @@ fn all_test_plans() -> TestPlan<NativeExecutor> {
 fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
     let all_plans = all_test_plans();
     let mut plan = None;
-    for candidate in all_plans.iter() {
+    for candidate in all_plans.into_iter() {
         if args.plan == candidate.name() {
             plan = Some(candidate);
             break;
@@ -103,6 +107,13 @@ fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
     let Some(plan) = plan else {
         log::error!("Unknown test plan: {}", args.plan);
         return Ok(());
+    };
+
+    // Filter if needed
+    let plan = if let Some(select) = &args.select {
+        plan.filter(|f| f.contains(select.as_str()))
+    } else {
+        plan
     };
 
     let mut good = 0;
@@ -137,11 +148,29 @@ fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn run_test(config: Config, test_plan: TestPlan<NativeExecutor>) -> Result<(), Error> {
+#[derive(Debug, Parser)]
+pub struct RunTestCli {
+    /// Skip all tests that do not match the selection
+    #[arg(short, long)]
+    select: Option<String>,
+}
+
+fn run_test(
+    config: Config,
+    args: RunTestCli,
+    test_plan: TestPlan<NativeExecutor>,
+) -> Result<(), Error> {
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&config.module)?;
     tests::wait_for_ipv4(&config, &mut shell)?;
+
+    // Filter if needed
+    let test_plan = if let Some(select) = &args.select {
+        test_plan.filter(|f| f.contains(select.as_str()))
+    } else {
+        test_plan
+    };
 
     match test_plan.run(&config, &mut shell) {
         Ok(0) => Ok(()),
@@ -199,14 +228,14 @@ fn app() -> Result<(), Error> {
     }
 
     let result = match cli.command {
-        Commands::SmokeTest => run_test(config, plans::smoke_test()),
+        Commands::SmokeTest(args) => run_test(config, args, plans::smoke_test()),
         Commands::Cycle(args) => cycle(config, args),
-        Commands::FunctionalTest => run_test(config, plans::functional_test()),
-        Commands::BandwidthTest => run_test(config, plans::bandwidth_test()),
-        Commands::LatencyTest => run_test(config, plans::latency_test()),
-        Commands::PhyQuickTest => run_test(config, plans::phy_quick_test()),
-        Commands::SystemTest => run_test(config, plans::system_test()),
-        Commands::AllTests => run_test(config, all_test_plans()),
+        Commands::FunctionalTest(args) => run_test(config, args, plans::functional_test()),
+        Commands::BandwidthTest(args) => run_test(config, args, plans::bandwidth_test()),
+        Commands::LatencyTest(args) => run_test(config, args, plans::latency_test()),
+        Commands::PhyQuickTest(args) => run_test(config, args, plans::phy_quick_test()),
+        Commands::SystemTest(args) => run_test(config, args, plans::system_test()),
+        Commands::AllTests(args) => run_test(config, args, all_test_plans()),
     };
 
     if let Some(settings) = printk {

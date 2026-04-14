@@ -110,6 +110,19 @@ impl<T: CommandExecutor> TestPlan<T> {
         })
     }
 
+    /// IntoIterator work-a-like.
+    ///
+    /// This is implemented as a regular method rather than using IntoIterator
+    /// because I don't know how to spell the return type without using
+    /// `impl` and when implementing IntoIterator the return type would become
+    /// an associated type (see https://github.com/rust-lang/rust/issues/63063).
+    pub fn into_iter(self) -> impl Iterator<Item = TestPlan<T>> {
+        self.plan.into_iter().filter_map(|s| match s {
+            TestSet::TestCase(_) => None,
+            TestSet::TestPlan(plan) => Some(plan),
+        })
+    }
+
     pub fn filter(&self, predicate: impl Fn(&str) -> bool) -> TestPlan<T> {
         Self {
             name: self.name,
