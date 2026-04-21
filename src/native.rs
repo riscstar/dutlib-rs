@@ -102,7 +102,16 @@ impl SudoExecutor {
 
 impl CommandExecutor for SudoExecutor {
     fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
-        self.executor.cmd(format!("sudo {}", cmd.as_ref()))
+        let cmd = cmd.as_ref();
+        if cmd.starts_with("echo ")
+            && let Some((left, right)) = cmd.split_once(" > ")
+        {
+            // Special-case `echo this > that` into a form that works with sudo
+            self.executor
+                .cmd(format!("{left} | sudo tee {right} > /dev/null"))
+        } else {
+            self.executor.cmd(format!("sudo {cmd}"))
+        }
     }
 
     fn try_read_to_string(&mut self) -> Option<String> {

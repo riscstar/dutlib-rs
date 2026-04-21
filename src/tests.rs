@@ -18,6 +18,7 @@ use crate::{
     ip,
     native::SudoExecutor,
     plans,
+    tracker::UndoTracker,
 };
 
 /// Show what drivers have bound to the adapter
@@ -632,8 +633,8 @@ pub fn link_mode_and_partner_advertise_all(
     let partner_adapter = &config.partner_adapter;
 
     // advertise everything
-    ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
-    let adapter_info = ethtool::advertise(shell, adapter, u64::MAX)?;
+    ethtool::advertise(&mut partner, partner_adapter, u64::MAX, None)?;
+    let adapter_info = ethtool::advertise(shell, adapter, u64::MAX, None)?;
 
     if let Some(AdapterInfo { speed: Some(speed) }) = adapter_info {
         log::info!("Link negotiated at {speed}Mb/s");
@@ -676,7 +677,13 @@ fn link_partner_advertise_helper(
     }
 
     // change the link partner's advertisement and give time for the link to stop
-    ethtool::advertise(&mut partner, partner_adapter, advertisement)?;
+    let mut undo = UndoTracker::new();
+    ethtool::advertise(
+        &mut partner,
+        partner_adapter,
+        advertisement,
+        Some(&mut undo),
+    )?;
 
     // wait for the new adapter info
     let test_info_result = ethtool::wait_link_up(shell, adapter);
@@ -693,7 +700,7 @@ fn link_partner_advertise_helper(
     );
 
     // restore the link partner's advertisement and make sure we get the adapter back
-    ethtool::advertise(&mut partner, partner_adapter, u64::MAX)?;
+    undo.restore(&mut partner)?;
     let restored_info = ethtool::wait_link_up(shell, adapter)?;
 
     // Make sure "something" works after restoring the defaults
@@ -787,7 +794,8 @@ fn link_mode_advertise_helper(
     }
 
     // change our own advertisement
-    let test_info_result = ethtool::advertise(shell, adapter, advertisement);
+    let mut undo = UndoTracker::new();
+    let test_info_result = ethtool::advertise(shell, adapter, advertisement, Some(&mut undo));
     if let Ok(Some(AdapterInfo { speed: Some(speed) })) = test_info_result {
         log::info!("Link negotiated at {speed}Mb/s");
     }
@@ -800,7 +808,8 @@ fn link_mode_advertise_helper(
     );
 
     // restore the link partner's advertisement and make sure we get the adapter back
-    let restored_info = ethtool::advertise(shell, adapter, u64::MAX)?;
+    undo.restore(shell)?;
+    let restored_info = ethtool::wait_link_up(shell, adapter)?;
 
     // Make sure "something" works after restoring the defaults
     failures += ping(config, shell)?;
@@ -850,7 +859,7 @@ pub fn link_mode_advertise_all(
     let adapter = &config.adapter;
 
     // advertise everything
-    let adapter_info = ethtool::advertise(shell, adapter, u64::MAX)?;
+    let adapter_info = ethtool::advertise(shell, adapter, u64::MAX, None)?;
 
     if let Some(AdapterInfo { speed: Some(speed) }) = adapter_info {
         log::info!("Link negotiated at {speed}Mb/s");
@@ -1483,14 +1492,22 @@ pub fn disable_checksum_offload(
     let mut failures = 0;
 
     let adapter = &config.adapter;
+    let tx = "tx-checksumming";
+    let rx = "rx-checksumming";
 
-    let reply = shell.cmd(format!("ethtool -k {adapter} | grep '^[tr]x-checksumming'"))?;
-    if !reply.contains("tx-checksumming: on") || !reply.contains("rx-checksumming: on") {
-        log::error!("disable_checksum_offload: Checksum offloading is not enabled by default");
+    if !ethtool::show_feature(shell, adapter, tx)? {
+        log::error!("disable_checksum_offload: TX checksum offloading is not enabled by default");
         failures += 1;
     }
 
-    shell.cmd(format!("ethtool -K {adapter} tx off rx off"))?;
+    if !ethtool::show_feature(shell, adapter, rx)? {
+        log::error!("disable_checksum_offload: RX checksum offloading is not enabled by default");
+        failures += 1;
+    }
+
+    let mut undo = UndoTracker::new();
+    ethtool::feature(shell, &mut undo, adapter, tx, false)?;
+    ethtool::feature(shell, &mut undo, adapter, rx, false)?;
 
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
@@ -1499,7 +1516,7 @@ pub fn disable_checksum_offload(
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(config, shell, tx_thresh, rx_thresh)?;
 
-    shell.cmd(format!("ethtool -K {adapter} tx on rx on"))?;
+    undo.restore(shell)?;
     wait_for_ipv4(config, shell)?;
     failures += plans::quick_test().run_with_path(config, shell, "disable_checksum_offload")?;
 
@@ -1510,16 +1527,15 @@ pub fn disable_tso(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     let mut failures = 0;
 
     let adapter = &config.adapter;
+    let feature = "tcp-segmentation-offload";
 
-    let reply = shell.cmd(format!(
-        "ethtool -k {adapter} | grep '^tcp-segmentation-offload'"
-    ))?;
-    if !reply.contains("tcp-segmentation-offload: on") {
+    if !ethtool::show_feature(shell, adapter, feature)? {
         log::error!("disable_checksum_offload: TSO is not enabled by default");
         failures += 1;
     }
 
-    shell.cmd(format!("ethtool -K {adapter} tso off"))?;
+    let mut undo = UndoTracker::new();
+    ethtool::feature(shell, &mut undo, adapter, feature, false)?;
 
     // This is like plans::quick_test() but has a *very* relaxed pass criteria
     // since there's little point in performance tuning with offload disabled
@@ -1528,7 +1544,7 @@ pub fn disable_tso(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     let (tx_thresh, rx_thresh) = (speed * 0.1, speed * 0.1);
     failures += iperf3_bidir_tuneable(config, shell, tx_thresh, rx_thresh)?;
 
-    shell.cmd(format!("ethtool -K {adapter} tso on"))?;
+    undo.restore(shell)?;
     wait_for_ipv4(config, shell)?;
     failures += plans::quick_test().run_with_path(config, shell, "disable_tso")?;
 

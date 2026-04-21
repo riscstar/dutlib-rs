@@ -13,6 +13,7 @@ pub mod ip;
 pub mod native;
 pub mod plans;
 pub mod tests;
+pub mod tracker;
 
 pub trait CommandExecutor {
     /// Convenience method to run a comment.

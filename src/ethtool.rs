@@ -2,7 +2,7 @@ use std::{io, thread, time::Duration};
 
 use expectrl::Error;
 
-use crate::CommandExecutor;
+use crate::{CommandExecutor, tracker::UndoTracker};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct AdapterInfo {
@@ -73,10 +73,62 @@ pub fn advertise(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     advertisement: u64,
+    undo: Option<&mut UndoTracker>,
 ) -> Result<Option<AdapterInfo>, Error> {
-    cmd_and_wait_link_up(
+    let info = cmd_and_wait_link_up(
         shell,
         adapter,
-        &format!("-s <ADAPTER> advertise 0x{advertisement:x}"),
-    )
+        &format!("-s {adapter} advertise 0x{advertisement:x}"),
+    )?;
+
+    if let Some(undo) = undo {
+        undo.add(format!(
+            "ethtool -s {adapter} advertise 0x{:x} && sleep 3",
+            u64::MAX
+        ));
+    }
+
+    Ok(info)
+}
+
+/// Helper to check for feature enable/disable
+pub fn show_feature(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+    feature: &str,
+) -> Result<bool, Error> {
+    let reply = shell.cmd(&format!("ethtool --json --show-features {adapter}"))?;
+    let json = serde_json::from_str::<serde_json::Value>(&reply).map_err(|e| {
+        log::error!("{e}");
+        io::Error::other("Cannot parse JSON from ethtool")
+    })?;
+
+    let Some(active) = json[0][feature]["active"].as_bool() else {
+        return Err(io::Error::other(format!("Cannot lookup ethtool {feature} feature")).into());
+    };
+
+    Ok(active)
+}
+
+/// Helper to turn features on and off
+pub fn feature(
+    shell: &mut impl CommandExecutor,
+    undo: &mut UndoTracker,
+    adapter: &str,
+    feature: &str,
+    state: bool,
+) -> Result<(), Error> {
+    let active = show_feature(shell, adapter, feature)?;
+
+    let _ = shell.cmd(&format!(
+        "ethtool --features {adapter} {feature} {}",
+        if state { "on" } else { "off" }
+    ))?;
+
+    undo.add(format!(
+        "ethtool --features {adapter} {feature} {}",
+        if active { "on" } else { "off" }
+    ));
+
+    Ok(())
 }
