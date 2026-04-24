@@ -430,7 +430,9 @@ pub fn verify_log_messages(
             // [            ] pcieport 0001:01:00.0: AER:   Error of this Agent is reported first
             if !lower.contains("warn")
                 && !lower.contains("bug")
-                && (lower.contains("pcieport") || lower.contains("tc956x-pci"))
+                && (lower.contains("pcieport")
+                    || lower.contains("tc956x-pci")
+                    || lower.contains("pcie_tc956x"))
                 && (lower.contains("correctable")
                     || lower.contains("error status/mask=")
                     || lower.contains("error of this agent reported first"))
