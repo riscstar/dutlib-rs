@@ -418,6 +418,11 @@ pub fn verify_log_messages(
                 continue;
             }
 
+            // [   65.724949] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: error -ENODEV: cannot probe xgmac3
+            if ln.contains("error -ENODEV: cannot probe xgmac3") {
+                continue;
+            }
+
             // [   76.783004] platform sound: deferred probe pending: snd-sc8280xp: WSA Playback: error getting cpu dai name
             if ln.contains("platform sound: deferred probe pending: snd-sc8280xp: WSA Playback: error getting cpu dai name") {
                 continue;
