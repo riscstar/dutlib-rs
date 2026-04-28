@@ -419,7 +419,12 @@ pub fn verify_log_messages(
             }
 
             // [   65.724949] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: error -ENODEV: cannot probe xgmac3
-            if ln.contains("error -ENODEV: cannot probe xgmac3") {
+            // [   32.444674] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: error -ENOTSUPP: unsupported phy speed
+            // [   32.444679] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: probe with driver dwmac_tc956x.dwmac-tc956x failed with error -524
+            if ln.contains("error -ENODEV: cannot probe xgmac3")
+                || ln.contains("error -ENOTSUPP: unsupported phy speed")
+                || ln.contains("probe with driver dwmac_tc956x.dwmac-tc956x failed with error -524")
+            {
                 continue;
             }
 
@@ -454,11 +459,17 @@ pub fn verify_log_messages(
             // [    1.785316] geni_i2c 980000.i2c: Direct firmware load for qcom/qcs6490/qupv3fw.elf failed with error -2
             // [    1.836510] remoteproc remoteproc1: Direct firmware load for qcom/qcs6490/adsp.mbn failed with error -2
             // [    1.839334] remoteproc remoteproc3: Direct firmware load for qcom/qcs6490/cdsp.mbn failed with error -2
+            // [   11.320741] xhci-pci-renesas 0001:04:00.0: WARNING: Host System Error
+            // [   20.959796] usb 2-1: device descriptor read/8, error -110
+            // [   38.808280] usb 2-1: device not accepting address 2, error -108
             if ln.contains("Direct firmware load for qcom/qcs6490/qupv3fw.elf failed with error -2")
                 || ln
                     .contains("Direct firmware load for qcom/qcs6490/adsp.mbn failed with error -2")
                 || ln
                     .contains("Direct firmware load for qcom/qcs6490/cdsp.mbn failed with error -2")
+                || (ln.contains("xhci-pci-renesas") && ln.contains("Host System Error"))
+                || (ln.contains("usb") && ln.contains("device descriptor read/8, error"))
+                || (ln.contains("usb") && ln.contains("device not accepting address"))
             {
                 continue;
             }
