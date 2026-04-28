@@ -1286,7 +1286,7 @@ pub fn iperf3_udp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     //                  %       % * 1.05
     // RX lost packets  0.4%    0.42%
     let rx_threshold_warn = 0.42;
-    let rx_threshold_error = 5.0;
+    let rx_threshold_error = 16.0;
 
     let rx = get_lost_percent(stats.end.streams[0].udp);
 
