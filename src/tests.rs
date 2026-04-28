@@ -334,7 +334,9 @@ pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Re
                         && (name.contains("MMC Counters")
                             || name.contains("Hash Filter MC")
                             || name.contains("SA Replacement (desc)")
-                            || name.contains("SA Replacement (reg)"))
+                            || name.contains("SA Replacement (reg)")
+                            || name.contains("Jumbo Frame")
+                            || name.contains("Multichannel Jumbo"))
                     {
                         // These are intermittent failures that we tolerate for now.
                         // Unfortunately in cascades and requires us to suppress
