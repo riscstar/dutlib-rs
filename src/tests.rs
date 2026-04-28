@@ -1237,13 +1237,16 @@ pub fn iperf3_udp_tx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     //                  %       % * 1.05
     // TX lost packets  4.2%    4.4%
     //let threshold = 4.4;
-    let threshold = 5.0;
+    let tx_threshold_warn = 4.4;
+    let tx_threshold_error = 16.0;
 
     let tx = get_lost_percent(stats.end.streams[0].udp);
 
-    if tx > threshold {
-        log::warn!("iperf3_udp_tx: Packet loss too high: TX {tx:0.1}");
+    if tx > tx_threshold_error {
+        log::error!("iperf3_udp_tx: Packet loss too high: TX {tx:0.1}");
         failures += 1;
+    } else if tx > tx_threshold_warn {
+        log::warn!("iperf3_udp_tx: Packet loss too high: TX {tx:0.1}");
     } else {
         log::info!("iperf3_udp_tx: Packet loss OK: TX {tx:0.1}");
     }
@@ -1271,14 +1274,16 @@ pub fn iperf3_udp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     // Vendor driver performance (running on 7.0-rc3, worst-of-ten at 2500Mb/s):
     //                  %       % * 1.05
     // RX lost packets  0.4%    0.42%
-    //let threshold = 0.42;
-    let threshold = 5.0;
+    let rx_threshold_warn = 0.42;
+    let rx_threshold_error = 5.0;
 
     let rx = get_lost_percent(stats.end.streams[0].udp);
 
-    if rx > threshold {
-        log::warn!("iperf3_udp_rx: Packet loss too high: RX {rx:0.1}");
+    if rx > rx_threshold_error {
+        log::error!("iperf3_udp_rx: Packet loss too high: RX {rx:0.1}");
         failures += 1;
+    } else if rx > rx_threshold_warn {
+        log::warn!("iperf3_udp_rx: Packet loss too high: RX {rx:0.1}");
     } else {
         log::info!("iperf3_udp_rx: Packet loss OK: RX {rx:0.1}");
     }
