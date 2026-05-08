@@ -425,7 +425,9 @@ pub fn verify_log_messages(
             // [   32.444679] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: probe with driver dwmac_tc956x.dwmac-tc956x failed with error -524
             if ln.contains("error -ENODEV: cannot probe xgmac3")
                 || ln.contains("error -ENOTSUPP: unsupported phy speed")
+                || ln.contains("error -EOPNOTSUPP: unsupported phy speed")
                 || ln.contains("probe with driver dwmac_tc956x.dwmac-tc956x failed with error -524")
+                || ln.contains("probe with driver dwmac_tc956x.dwmac-tc956x failed with error -95")
             {
                 continue;
             }
