@@ -449,7 +449,7 @@ pub fn verify_log_messages(
                     || lower.contains("pcie_tc956x"))
                 && (lower.contains("correctable")
                     || lower.contains("error status/mask=")
-                    || lower.contains("error of this agent reported first"))
+                    || lower.contains("error of this agent is reported first"))
             {
                 continue;
             }
