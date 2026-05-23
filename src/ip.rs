@@ -1,4 +1,4 @@
-use std::{thread, time::Duration};
+use std::{io, thread, time::Duration};
 
 use expectrl::Error;
 
@@ -14,7 +14,7 @@ pub fn cmd(
     adapter: &str,
     command: &str,
 ) -> Result<String, Error> {
-    shell.cmd(format!("ip {command}").replace("<ADAPTER>", adapter))
+    shell.cmd(format!("ip -color=never {command}").replace("<ADAPTER>", adapter))
 }
 
 /// Helper function to send an ethtool command that provokes phy renegotiation
@@ -32,4 +32,43 @@ pub fn cmd_and_wait_link_up(
     thread::sleep(Duration::from_secs(3));
 
     ethtool::wait_link_up(shell, adapter)
+}
+
+/// Helper function to lookup our MAC address
+pub fn mac_address(shell: &mut impl CommandExecutor, adapter: &str) -> Result<String, Error> {
+    let reply = cmd(shell, adapter, "link show eth0")?;
+
+    let mut trigger = false;
+    for word in reply.split_whitespace() {
+        if trigger {
+            return Ok(word.to_string());
+        }
+        if word == "link/ether" {
+            // We found "link/ether" so MAC address will be the next word
+            trigger = true;
+        }
+    }
+
+    Err(io::Error::other("Unexpected output from `ip link`").into())
+}
+
+/// Helper function to lookup our MAC address
+pub fn ipv4_address(shell: &mut impl CommandExecutor, adapter: &str) -> Result<String, Error> {
+    let reply = cmd(shell, adapter, "-4 addr show eth0")?;
+
+    let mut trigger = false;
+    for word in reply.split_whitespace() {
+        if trigger {
+            if let Some((addr, _)) = word.split_once("/") {
+                return Ok(addr.to_string());
+            }
+            break;
+        }
+        if word == "inet" {
+            // We found "inet" so IP address will be the next word
+            trigger = true;
+        }
+    }
+
+    Err(io::Error::other("Unexpected output from `ip addr`").into())
 }

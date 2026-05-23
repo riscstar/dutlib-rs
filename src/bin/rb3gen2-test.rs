@@ -3,14 +3,14 @@ use std::{
     process::{self, Command},
 };
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use expectrl::Error;
 
 use dutlib::{
     CommandExecutor, Config,
     native::NativeExecutor,
     plans::{self, TestPlan},
-    read_config, tests,
+    read_config, tests, tsn_tests,
 };
 
 #[derive(Debug, Parser)]
@@ -62,6 +62,9 @@ enum Commands {
 
     /// Run all tests that do not require the board to be rebooted.
     AllTests(RunTestCli),
+
+    // Configure interactive TSN scenarios
+    Tsn(TsnCli),
 }
 
 #[derive(Debug, Parser)]
@@ -184,6 +187,42 @@ fn run_test(
     }
 }
 
+#[derive(Clone, Debug, ValueEnum)]
+enum TsnScenario {
+    /// Configure as profinet_rt
+    ProfinetRt,
+}
+
+#[derive(Debug, Parser)]
+pub struct TsnCli {
+    /// Skip all tests that do not match the selection
+    scenario: TsnScenario,
+
+    /// Configure the link partner device (based on config)
+    #[arg(short, long)]
+    mirror: bool,
+}
+
+fn tsn_scenario(config: Config, args: TsnCli) -> Result<(), Error> {
+    let mut shell = NativeExecutor::new();
+    tests::uname(&mut shell)?;
+    shell.load_module(&config.module)?;
+    tests::wait_for_ipv4(&config, &mut shell)?;
+
+    let interface = if args.mirror {
+        &config.partner_adapter
+    } else {
+        &config.adapter
+    };
+
+    let mut undo = tsn_tests::stmmac_setup(&mut shell, interface, 1000000)?;
+    println!("\nScenario is configured. Press RETURN to return to defaults.");
+    std::io::stdin().read_line(&mut String::new())?;
+    undo.restore(&mut shell)?;
+
+    Ok(())
+}
+
 fn app() -> Result<(), Error> {
     let mut cli = Cli::parse();
 
@@ -236,6 +275,7 @@ fn app() -> Result<(), Error> {
         Commands::PhyQuickTest(args) => run_test(config, args, plans::phy_quick_test()),
         Commands::SystemTest(args) => run_test(config, args, plans::system_test()),
         Commands::AllTests(args) => run_test(config, args, all_test_plans()),
+        Commands::Tsn(args) => tsn_scenario(config, args),
     };
 
     if let Some(settings) = printk {

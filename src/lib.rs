@@ -12,8 +12,10 @@ pub mod ethtool;
 pub mod ip;
 pub mod native;
 pub mod plans;
+pub mod rtc_testbench;
 pub mod tests;
 pub mod tracker;
+pub mod tsn_tests;
 
 pub trait CommandExecutor {
     /// Convenience method to run a comment.

@@ -45,7 +45,7 @@ Most of these should be already present, but just in case:
 apt update
 apt install \
   util-linux ethtool iproute2 iperf3 linuxptp iputils-ping \
-  openssh-client
+  openssh-client libmosquitto1 libxdp1
 ~~~
 
 ### Setting up `systemd` to automatically log in as root after reboot
@@ -135,7 +135,7 @@ already in place, but just in case:
 sudo apt update
 sudo apt install \
   util-linux ethtool iproute2 iperf3 linuxptp iputils-ping \
-  openssh-client openssh-server
+  openssh-client openssh-server libmosquitto1 libxdp1
 ~~~
 
 When installing `iperf3`, it should be set up to start the `systemd`

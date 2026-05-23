@@ -1732,7 +1732,7 @@ pub fn vlan_smoke_test(config: &Config, shell: &mut impl CommandExecutor) -> Res
 /// Extracts the `-3` from lines of the following form, providing them as an
 /// array:
 ///
-///     ptp4l[8885.499]: master offset         -3 s2 freq  +31709 path delay      2009
+/// ptp4l[8885.499]: master offset         -3 s2 freq  +31709 path delay      2009
 fn ptp_offsets<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<i64> {
     lines
         .into_iter()

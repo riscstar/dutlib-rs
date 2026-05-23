@@ -69,6 +69,9 @@ enum Commands {
     /// Run tests that require the partner to be configures (requires sudo prep)
     PartnerTest(RunTestCli),
 
+    /// Run TSN test scenarios
+    TsnTest(RunTestCli),
+
     /// Run all tests that do not require the board to be rebooted.
     AllTests(AllTestsCli),
 }
@@ -327,6 +330,7 @@ fn app() -> Result<(), Error> {
         Commands::SystemTest(args) => run_test(config, args, plans::system_test()),
         Commands::PartnerTest(args) => run_test(config, args, plans::partner_test()),
         Commands::AllTests(args) => all_tests(config, args),
+        Commands::TsnTest(args) => run_test(config, args, plans::tsn_test()),
     }
 }
 

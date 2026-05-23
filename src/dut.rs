@@ -16,7 +16,16 @@ use crate::{CommandExecutor, SessionExt};
 impl CommandExecutor for ReplSession<OsSession> {
     fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
         log::info!(">>> {}", cmd.as_ref());
-        let reply = self.execute(cmd);
+        let reply = if cmd.as_ref().contains('\n') {
+            // Newlines play havoc with the echo suppression. Let's just
+            // disable it and leave the echo for the caller to handle
+            self.set_echo(false);
+            let reply = self.execute(cmd);
+            self.set_echo(true);
+            reply
+        } else {
+            self.execute(cmd)
+        };
         reply.map(|raw| {
             let mut s = String::new();
 

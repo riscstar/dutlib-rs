@@ -1,6 +1,6 @@
 use expectrl::Error;
 
-use crate::{CommandExecutor, Config, tests};
+use crate::{CommandExecutor, Config, tests, tsn_tests};
 
 type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, Error>;
 
@@ -304,6 +304,14 @@ pub fn partner_test<T: CommandExecutor>() -> TestPlan<T> {
     plan.test_case("ptp_receiver", tests::ptp_receiver);
     plan.test_case("ptp_transmitter", tests::ptp_transmitter);
     plan.test_case("verify_log_messages", tests::verify_log_messages);
+
+    plan
+}
+
+pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
+    let mut plan = TestPlan::new("tsn-test");
+
+    plan.test_case("profinet_rt", tsn_tests::profinet_rt);
 
     plan
 }

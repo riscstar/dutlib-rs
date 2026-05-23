@@ -31,7 +31,6 @@ impl UndoTracker {
         let old_value = shell.cmd(format!("cat {path}"))?;
         let _ = shell.cmd(format!("echo {value} > {path}"))?;
         self.add(format!("echo {old_value} > {path}"));
-        dbg!(&self.commands);
 
         Ok(())
     }
