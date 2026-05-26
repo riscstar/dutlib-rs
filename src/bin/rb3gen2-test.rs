@@ -28,13 +28,17 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// Name of the network driver module to be loaded
-    #[arg(short, long)]
-    module: Option<String>,
-
     /// Name of the device (as it appears in `ip addr`)
     #[arg(short, long)]
     adapter: Option<String>,
+
+    /// Name of the board (rb3gen2, pc, etc)
+    #[arg(short, long)]
+    board: Option<String>,
+
+    /// Name of the network driver module to be loaded
+    #[arg(short, long)]
+    module: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -258,7 +262,7 @@ fn app() -> Result<(), Error> {
         None
     };
 
-    let mut config = read_config()?;
+    let mut config = read_config(cli.board.as_deref())?;
     if let Some(adapter) = cli.adapter.take() {
         config.adapter = adapter;
     }

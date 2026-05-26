@@ -93,11 +93,14 @@ pub struct Config {
     pub partner_adapter: String,
 }
 
-pub fn read_config() -> Result<Config, io::Error> {
+pub fn read_config(board: Option<&str>) -> Result<Config, io::Error> {
     let home =
         std::env::var_os("HOME").ok_or_else(|| io::Error::other("No HOME in environment"))?;
+    let board = board.unwrap_or("rb3gen2");
 
-    let config_file = Path::new(&home).join(".dutlib").join("rb3gen2.toml");
+    let config_file = Path::new(&home)
+        .join(".dutlib")
+        .join(format!("{board}.toml"));
     let config = fs::read_to_string(config_file)?;
     let config = toml::from_str(&config).map_err(|e| io::Error::other(format!("{e}")))?;
 

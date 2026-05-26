@@ -32,6 +32,10 @@ struct Cli {
     #[arg(short, long)]
     adapter: Option<String>,
 
+    /// Name of the board (rb3gen2, pc, etc)
+    #[arg(short, long)]
+    board: Option<String>,
+
     /// Name of the network driver module to be loaded
     #[arg(short, long)]
     module: Option<String>,
@@ -310,7 +314,7 @@ fn app() -> Result<(), Error> {
     );
     env_logger::Builder::from_env(env).init();
 
-    let mut config = read_config()?;
+    let mut config = read_config(cli.board.as_deref())?;
     if let Some(adapter) = cli.adapter.take() {
         config.adapter = adapter;
     }
