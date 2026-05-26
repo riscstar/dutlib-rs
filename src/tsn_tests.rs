@@ -255,7 +255,7 @@ pub fn boost_irq_threads(
 pub fn igc_setup(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
-    cycle_time_ns: u64,
+    _cycle_time_ns: u64,
 ) -> Result<UndoTracker, Error> {
     let interface = interface.as_ref();
     let mut tracker = UndoTracker::new();
