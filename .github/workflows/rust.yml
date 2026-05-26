@@ -19,6 +19,10 @@ jobs:
         with:
           # Ensure `git describe` works in later steps
           fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build native
+        run: cargo build --release
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross --rev 19bc73f2775a0683a991910a21c6368aaaa858f8
       - name: Build
