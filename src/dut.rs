@@ -122,23 +122,31 @@ impl DeviceUnderTest {
             return Err(io::Error::other("TOML configuration error: console is not set").into());
         };
 
-        // Error handling will try to reboot the target if possible but also
-        // implements direct exit for permanent failures.
-        if let Err(err) = uart.expect("Terminal ready") {
-            let remaining = uart.try_read_to_string();
-            if remaining
-                .as_deref()
-                .unwrap_or("")
-                .contains("Resource temporarily unavailable")
-            {
+        if self.console.contains("picocom") {
+            // Error handling will try to reboot the target if possible but also
+            // implements direct exit for permanent failures.
+            if let Err(err) = uart.expect("Terminal ready") {
+                let remaining = uart.try_read_to_string();
+                if remaining
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("Resource temporarily unavailable")
+                {
+                    log::debug!("{:?}", remaining);
+                    log::error!("Terminal emulator cannot start (port busy?)");
+                    return Err(err);
+                }
+
+                if remaining.as_deref().unwrap_or("").contains("password: ") {
+                    log::debug!("{:?}", remaining);
+                    log::warn!("Received password prompt (missing ssh credentials?");
+                    return Err(err);
+                }
+
                 log::debug!("{:?}", remaining);
-                log::error!("Terminal emulator cannot start (port busy?)");
+                log::warn!("Cannot connect to target");
                 return Err(err);
             }
-
-            log::debug!("{:?}", remaining);
-            log::warn!("Cannot connect to target");
-            return Err(err);
         }
 
         match self.state {
