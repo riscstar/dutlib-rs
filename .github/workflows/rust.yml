@@ -30,10 +30,13 @@ jobs:
         run: cargo build --release
       - name: Package
         run: |
-          mkdir -p dutlib-$(git describe)/bin
+          mkdir -p dutlib-$(git describe)/aarch64
+          mkdir -p dutlib-$(git describe)/x86_64
           cp README.md dutlib-*/
-          cp target/aarch64-unknown-linux-gnu/release/rb3gen2-remote dutlib-*/bin/
-          cp target/aarch64-unknown-linux-gnu/release/rb3gen2-test dutlib-*/bin/
+          cp target/aarch64-unknown-linux-gnu/release/rb3gen2-remote dutlib-*/aarch64/
+          cp target/aarch64-unknown-linux-gnu/release/rb3gen2-test dutlib-*/aarch64/
+          cp target/release/rb3gen2-remote dutlib-*/x86_64/
+          cp target/release/rb3gen2-test dutlib-*/x86_64/
           tar --owner 0 --group 0 -cf dutlib-$(git describe).tar dutlib-*/
           zstd --ultra -20 dutlib-*.tar
       - name: Upload artifacts
