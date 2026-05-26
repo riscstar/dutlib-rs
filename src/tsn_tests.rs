@@ -185,6 +185,28 @@ pub fn load_kernel_modules(shell: &mut impl CommandExecutor) -> Result<(), Error
     Ok(())
 }
 
+pub fn setup_threaded_napi(
+    shell: &mut impl CommandExecutor,
+    interface: impl AsRef<str>,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
+    let interface = interface.as_ref();
+
+    tracker.sysfs(shell, format!("/sys/class/net/{interface}/threaded"), "1")?;
+
+    let pid_list = shell.cmd(format!(
+        "ps aux | grep napi | grep {interface} | awk '{{ print $2; }}'"
+    ))?;
+
+    for pid in pid_list.split_whitespace() {
+        shell.cmd(format!("chrt -p -f 85 {pid}"))?;
+        // No undo needed (assuming NAPI is not threaded *before* we are called
+        // then the NAPI threads are will be destroyed when threading disabled)
+    }
+
+    Ok(())
+}
+
 pub fn napi_defer_hard_irqs(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
@@ -230,6 +252,105 @@ pub fn boost_irq_threads(
 }
 
 #[rustfmt::skip]
+pub fn igc_setup(
+    shell: &mut impl CommandExecutor,
+    interface: impl AsRef<str>,
+    cycle_time_ns: u64,
+) -> Result<UndoTracker, Error> {
+    let interface = interface.as_ref();
+    let mut tracker = UndoTracker::new();
+
+    load_kernel_modules(shell)?;
+    setup_threaded_napi(shell, interface, &mut tracker)?;
+
+    shell.cmd(format!("ethtool -K {interface} rx-vlan-offload off"))?;
+    tracker.add(format!("ethtool -K {interface} rx-vlan-offload on"));
+
+    shell.cmd(format!(
+        "ethtool -s {interface} speed 1000 autoneg on duplex full",
+    ))?;
+    tracker.add(format!("ethtool -s {interface} autoneg on"));
+
+    // RTC-Testbench scripts set `ethtool -L {interface} combined 4` here but
+    // that's already the default so we don't bother!
+
+    // In principle setting base-time to zero will be projected forward in
+    // time and give the same base-time across everything sharing the same
+    // PTP clock.
+    let base_time = 0;
+
+    // Tx Assignment with Qbv and full hardware offload: 20% RT, 80% non-RT.
+    //
+    // TX Q 0 - RTC
+    // TX Q 1 - RTA
+    // TX Q 2 - DCP, LLDP, UDP High
+    // TX Q 3 - Everything else
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} handle 100 parent root taprio num_tc 4 ",
+            "map 3 3 3 3 3 2 1 0 3 3 3 3 3 3 3 3 ",
+            "queues 1@0 1@1 1@2 1@3 ",
+            "base-time {} ",
+            "sched-entry S 0x01 100000 ",
+            "sched-entry S 0x02 100000 ",
+            "sched-entry S 0x04 400000 ",
+            "sched-entry S 0x08 400000 ",
+            "flags 0x02"
+        ),
+        interface, base_time
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} root"));
+
+    // Rx Assignment is the same as Tx Assignment
+    let rx_queues = [2, 2, 2, 0, 1, 2, 2, 3, 2, 2];
+
+    shell.cmd(format!("ethtool -K {interface} ntuple on"))?;
+    tracker.add(format!("ethtool -K {interface} ntuple off"));
+
+    // Steer based in VLAN priority
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0xe000 m 0x1fff action {} ", rx_queues[0] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0xc000 m 0x1fff action {} ", rx_queues[1] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0xa000 m 0x1fff action {} ", rx_queues[2] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0x8000 m 0x1fff action {} ", rx_queues[3] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0x6000 m 0x1fff action {} ", rx_queues[4] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0x4000 m 0x1fff action {} ", rx_queues[5] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0x2000 m 0x1fff action {} ", rx_queues[6] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether vlan 0xe000 m 0x1fff action {} ", rx_queues[7] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+
+    // Steer PTP and LLDP by EtherType
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether proto 0x88f7 action {} ", rx_queues[8] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+    let reply = shell.cmd(format!(
+        "ethtool -N {interface} flow-type ether proto 0x88f7 action {} ", rx_queues[9] ))?;
+    tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
+
+    // Increase ring parameters
+    shell.cmd(format!("ethtool -G {interface} tx 4096 rx 4096"))?;
+    tracker.add(format!("ethtool -G {interface} tx 256 rx 256"));
+
+    boost_irq_threads(shell, interface, &mut tracker)?;
+
+    Ok(tracker)
+}
+
+#[rustfmt::skip]
 pub fn stmmac_setup(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
@@ -244,16 +365,17 @@ pub fn stmmac_setup(
     shell.cmd(format!("ethtool -K {interface} rx-vlan-offload off"))?;
     tracker.add(format!("ethtool -K {interface} rx-vlan-offload on"));
 
+    // In principle setting base-time to zero will be projected forward in
+    // time and give the same base-time across everything sharing the same
+    // PTP clock.
+    let base_time = 0;
+
     // Tx Assignment with Qbv and full hardware offload: 20% RT, 80% non-RT.
     //
     // TX Q 0 - Everything else
     // TX Q 1 - RTC
     // TX Q 2 - RTA
     // TX Q 3 - DCP, LLDP, UDP High
-    //
-    // In principle setting base-time to zero will be projected forward in
-    // time and give the same base-time across everything sharing the same
-    // PTP clock.
     shell.cmd(format!(
         concat!(
             "tc qdisc replace dev {} handle 100 parent root taprio num_tc 4 ",
@@ -266,7 +388,7 @@ pub fn stmmac_setup(
             "sched-entry S 0x01 400000 ",
             "flags 0x02"
         ),
-        interface, 0
+        interface, base_time
     ))?;
     tracker.add(format!("tc qdisc del dev {interface} root"));
 
