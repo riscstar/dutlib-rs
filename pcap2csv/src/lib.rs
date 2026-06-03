@@ -1,0 +1,234 @@
+use chrono::{DateTime, TimeZone, Utc};
+use std::fmt;
+
+pub struct ParsedPacket {
+    pub arrival_time: DateTime<Utc>,
+    pub src_mac: [u8; 6],
+    pub dest_mac: [u8; 6],
+    pub outer_ethertype: u16,
+    pub vlan_ethertype: Option<u16>,
+    pub vlan_id: Option<u16>,
+    pub priority: Option<u16>,
+    pub ipv4_protocol: Ipv4Protocol,
+}
+
+impl ParsedPacket {
+    pub fn new(packet: &pcap::Packet) -> Option<Self> {
+        let data = packet.data;
+
+        // Ensure the packet has at least an Ethernet header (14 bytes)
+        if data.len() < 14 {
+            return None;
+        }
+
+        let dest_mac = data[0..6].try_into().ok()?;
+        let src_mac = data[6..12].try_into().ok()?;
+
+        // Extract the initial EtherType (bytes 12 and 13)
+        let outer_ethertype = u16::from_be_bytes([data[12], data[13]]);
+        let mut vlan_ethertype = None;
+        let mut vlan_id = None;
+        let mut priority = None;
+        let mut effective_ethertype = outer_ethertype;
+
+        // 0x8100 indicates an 802.1Q VLAN tag
+        if outer_ethertype == 0x8100 && data.len() >= 18 {
+            // TCI is at bytes 14 and 15.
+            let tci = u16::from_be_bytes([data[14], data[15]]);
+            vlan_id = Some(tci & 0x0FFF);
+            priority = Some((tci >> 13) & 0x07);
+
+            // The actual inner Layer 3 EtherType is pushed to bytes 16 and 17
+            let inner_ethertype = u16::from_be_bytes([data[16], data[17]]);
+            vlan_ethertype = Some(inner_ethertype);
+            effective_ethertype = inner_ethertype;
+        }
+
+        let mut ipv4_protocol = Ipv4Protocol::Unknown(0);
+
+        if effective_ethertype == 0x0800 {
+            let ip_offset = if outer_ethertype == 0x8100 { 18 } else { 14 };
+            if data.len() >= ip_offset + 20 {
+                let protocol = data[ip_offset + 9];
+                let ihl = (data[ip_offset] & 0x0F) as usize;
+                let transport_offset = ip_offset + (ihl * 4);
+
+                let port = if data.len() >= transport_offset + 4 {
+                    Some(u16::from_be_bytes([
+                        data[transport_offset + 2],
+                        data[transport_offset + 3],
+                    ]))
+                } else {
+                    None
+                };
+
+                match (protocol, port) {
+                    (6, Some(p)) => ipv4_protocol = Ipv4Protocol::Tcp(p),
+                    (17, Some(p)) => ipv4_protocol = Ipv4Protocol::Udp(p),
+                    (1, _) if data.len() >= transport_offset + 1 => {
+                        ipv4_protocol = Ipv4Protocol::Icmp(data[transport_offset])
+                    }
+                    (p, _) => ipv4_protocol = Ipv4Protocol::Unknown(p),
+                }
+            }
+        }
+
+        // Convert pcap timeval timestamp into an ISO 8601 string
+        let sec = packet.header.ts.tv_sec as i64;
+        let usec = packet.header.ts.tv_usec as u32;
+
+        let datetime = chrono::Utc
+            .timestamp_opt(sec, usec * 1_000)
+            .single()
+            .unwrap_or_else(|| chrono::Utc.timestamp_opt(0, 0).unwrap());
+
+        Some(ParsedPacket {
+            arrival_time: datetime,
+            src_mac,
+            dest_mac,
+            outer_ethertype,
+            vlan_ethertype,
+            vlan_id,
+            priority,
+            ipv4_protocol,
+        })
+    }
+
+    pub fn categorize(&self) -> Category {
+        let effective_ethertype = self.vlan_ethertype.unwrap_or(self.outer_ethertype);
+        match self.priority {
+            Some(4) => Category::Rtc,
+            Some(3) => Category::Rta,
+            Some(2) => Category::Dcp,
+            _ => match effective_ethertype {
+                0x88f7 => Category::Ptp,
+                0x88cc => Category::Lldp,
+                0x0800 => match self.ipv4_protocol {
+                    Ipv4Protocol::Tcp(port) => Category::Tcp(port),
+                    Ipv4Protocol::Udp(port) => Category::Udp(port),
+                    Ipv4Protocol::Icmp(icmp_type) => Category::Icmp(icmp_type),
+                    Ipv4Protocol::Unknown(proto) => Category::Ipv4Proto(proto),
+                },
+                _ => Category::Unknown,
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Copy, Clone)]
+pub enum Ipv4Protocol {
+    Tcp(u16),
+    Udp(u16),
+    Icmp(u8),
+    Unknown(u8),
+}
+
+pub enum Category {
+    Rtc,
+    Rta,
+    Dcp,
+    Ptp,
+    Lldp,
+    Tcp(u16),
+    Udp(u16),
+    Icmp(u8),
+    Ipv4Proto(u8),
+    Unknown,
+}
+
+impl Category {
+    pub fn profinet_rt(&self) -> TrafficSchedule {
+        match self {
+            Category::Rtc => TrafficSchedule::new(1000, 0, 100),
+            Category::Rta => TrafficSchedule::new(1000, 100, 100),
+            Category::Dcp | Category::Lldp | Category::Udp(6666) => {
+                TrafficSchedule::new(1000, 200, 400)
+            }
+            Category::Icmp(_) => {
+                // ICMP traffic is typically generated by the recipient
+                // when we run reference without also running mirror. It can
+                // be issued at any time.
+                TrafficSchedule::default()
+            }
+            _ => TrafficSchedule::new(1000, 600, 400),
+        }
+    }
+}
+
+impl fmt::Display for Category {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Category::Rtc => write!(f, "Rtc"),
+            Category::Rta => write!(f, "Rta"),
+            Category::Dcp => write!(f, "DCP"),
+            Category::Ptp => write!(f, "PTP"),
+            Category::Lldp => write!(f, "LLDP"),
+            Category::Tcp(port) => write!(f, "TCP-{}", port),
+            Category::Udp(port) => write!(f, "UDP-{}", port),
+            Category::Icmp(icmp_type) => write!(f, "ICMP-{}", icmp_type),
+            Category::Ipv4Proto(proto) => write!(f, "IPv4-proto-{}", proto),
+            Category::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+pub struct TrafficSchedule {
+    pub cycle_time_us: u32,
+    pub gate_open_at_us: u32,
+    pub gate_open_for_us: u32,
+}
+
+impl TrafficSchedule {
+    pub fn new(cycle_time_us: u32, gate_open_at_us: u32, gate_open_for_us: u32) -> Self {
+        assert!(
+            gate_open_at_us + gate_open_for_us <= cycle_time_us,
+            "gate_open_at_us + gate_open_for_us must be <= cycle_time_us"
+        );
+
+        Self {
+            cycle_time_us,
+            gate_open_at_us,
+            gate_open_for_us,
+        }
+    }
+
+    pub fn default() -> Self {
+        // Gate always open
+        Self::new(0, 0, 0)
+    }
+
+    pub fn deviance(&self, us: i64) -> i32 {
+        if self.cycle_time_us == 0 {
+            return 0;
+        }
+
+        // Internally we'll be using signed 64-bit arithmetic, let's make that easy
+        let cycle_time_us = self.cycle_time_us as i64;
+        let gate_open_at_us = self.gate_open_at_us as i64;
+        let gate_closed_at_us = self.gate_open_at_us as i64 + self.gate_open_for_us as i64;
+
+        let offset = (us as i64) % cycle_time_us;
+
+        if offset > gate_open_at_us && offset < gate_closed_at_us {
+            // Good packet
+            0
+        } else {
+            // Bad packet, let's figure out how far off we are from the schedule
+            let delta_from_wrapped_start = (offset - cycle_time_us) - gate_open_at_us;
+            let delta_from_start = offset - gate_open_at_us;
+            let delta_from_end = offset - gate_closed_at_us;
+            let delta_from_wrapped_end = (offset + cycle_time_us) - gate_closed_at_us;
+
+            // From the above, find the closest value to zero
+            [
+                delta_from_wrapped_start,
+                delta_from_start,
+                delta_from_end,
+                delta_from_wrapped_end,
+            ]
+            .into_iter()
+            .min_by_key(|&d| d.abs())
+            .unwrap_or(0) as i32
+        }
+    }
+}

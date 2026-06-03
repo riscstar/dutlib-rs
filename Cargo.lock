@@ -216,7 +216,8 @@ dependencies = [
 [[package]]
 name = "expectrl"
 version = "0.8.0"
-source = "git+https://github.com/daniel-thompson/expectrl?branch=main#f757df7fd70b016015b40c42fa78b13c5d74bd45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0e0706d01b4f43adaf7e0fb460e07477c36b74ae60fdeb1d045001bd77b4bd1"
 dependencies = [
  "conpty",
  "crossbeam-channel",
