@@ -1817,7 +1817,9 @@ pub fn ptp_receiver(config: &Config, shell: &mut impl CommandExecutor) -> Result
     let (tx_result, rx_result) = thread::scope(|s| {
         let tx = s.spawn(|| {
             partner.with_timeout_secs(60, |sh| {
-                sh.cmd(format!("timeout 50 ptp4l -i {partner_adapter} -H -m"))
+                sh.cmd(format!(
+                    "timeout 50 ptp4l -i {partner_adapter} -H -m --hwts_filter=full"
+                ))
             })
         });
 
