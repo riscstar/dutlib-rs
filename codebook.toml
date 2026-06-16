@@ -5,6 +5,7 @@ words = [
     "dmesg",
     "dut",
     "dutlib",
+    "ethertype",
     "ethtool",
     "ipv",
     "lldp",
@@ -23,6 +24,7 @@ words = [
     "tso",
     "txrx",
     "urandom",
+    "usec",
     "vid",
     "xdp",
 ]

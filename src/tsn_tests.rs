@@ -3,9 +3,10 @@ use std::{thread, time::Duration};
 use expectrl::Error;
 
 use crate::{
-    CommandExecutor, Config, ip,
+    CommandExecutor, Config, ethtool, ip,
     native::SudoExecutor,
     rtc_testbench::{self, TrafficClass, TrafficContext},
+    tests::DriverInfo,
     tracker::UndoTracker,
 };
 
@@ -417,6 +418,21 @@ pub fn stmmac_setup(
     Ok(tracker)
 }
 
+pub fn mac_setup(
+    shell: &mut impl CommandExecutor,
+    interface: impl AsRef<str>,
+    cycle_time_ns: u64,
+) -> Result<UndoTracker, Error> {
+    let interface = interface.as_ref();
+    let driver_info = DriverInfo::new(shell, interface)?;
+
+    if driver_info.eth_driver == "igc" {
+        igc_setup(shell, interface, cycle_time_ns)
+    } else {
+        stmmac_setup(shell, interface, cycle_time_ns)
+    }
+}
+
 pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let mut failures = 0;
 
@@ -425,11 +441,13 @@ pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<
 
     let context = traffic_context(config, shell, partner)?;
 
-    let mut shell_teardown = stmmac_setup(shell, &context.reference_interface, 1000000)?;
-    let mut partner_teardown = stmmac_setup(partner, &context.mirror_interface, 1000000)?;
+    let mut shell_teardown = mac_setup(shell, &context.reference_interface, 1000000)?;
+    let mut partner_teardown = mac_setup(partner, &context.mirror_interface, 1000000)?;
 
     config_profinet_rt(&context, shell, partner)?;
+    let before = ethtool::statistics(shell, &config.adapter)?;
     run_rtc_benchmark(shell, partner, 60)?;
+    let after = ethtool::statistics(shell, &config.adapter)?;
 
     let reference = shell.cmd("tail -1 reference.log")?;
     let mirror = partner.cmd("tail -1 mirror.log")?;
@@ -458,6 +476,11 @@ pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<
 
     rtc_testbench::log_traffic_stats(&stats.0);
     rtc_testbench::log_traffic_stats(&stats.1);
+
+    let packet_counts = after - before;
+    log::info!("Packet counts: {packet_counts:?}");
+    let packet_counts = packet_counts.normalize();
+    log::info!("Packet counts: {packet_counts:?}");
 
     Ok(failures)
 }
