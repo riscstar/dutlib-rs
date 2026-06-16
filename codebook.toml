@@ -1,6 +1,8 @@
 words = [
+    "autotune",
     "bidir",
     "chrt",
+    "cpupower",
     "dcp",
     "dmesg",
     "dut",

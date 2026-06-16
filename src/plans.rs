@@ -1,6 +1,6 @@
 use expectrl::Error;
 
-use crate::{CommandExecutor, Config, tests, tsn_tests};
+use crate::{CommandExecutor, Config, tests, tsn_tests, tuning};
 
 type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, Error>;
 
@@ -158,6 +158,9 @@ impl<T: CommandExecutor> TestPlan<T> {
     }
 
     pub fn run(&self, config: &Config, shell: &mut T) -> Result<u32, Error> {
+        log::info!("TUNING: Automatically applying system tuning");
+        tuning::autotune(config, shell)?;
+
         self.run_with_path(config, shell, "")
     }
 }

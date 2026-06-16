@@ -16,6 +16,7 @@ pub mod rtc_testbench;
 pub mod tests;
 pub mod tracker;
 pub mod tsn_tests;
+pub mod tuning;
 
 pub trait CommandExecutor {
     /// Convenience method to run a comment.
@@ -91,6 +92,10 @@ pub struct Config {
     /// tests.
     #[serde(default)]
     pub partner_adapter: String,
+
+    /// Flag use to suppress automatic system tuning during test execution.
+    #[serde(default)]
+    pub no_autotune: bool,
 }
 
 pub fn read_config(board: Option<&str>) -> Result<Config, io::Error> {
