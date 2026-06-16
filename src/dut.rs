@@ -204,7 +204,7 @@ impl DeviceUnderTest {
         uart.expect("resync check")?;
 
         let mut shell = ReplSession::new(uart, "REPLSESSION# ");
-        shell.set_echo(true);
+        shell.set_echo(self.console.contains("picocom") || !self.console.contains("ssh"));
         shell.set_quit_command("exit");
         shell.expect_prompt()?;
 
