@@ -204,7 +204,7 @@ pub fn bandwidth_test<T: CommandExecutor>() -> TestPlan<T> {
 }
 
 pub fn latency_test<T: CommandExecutor>() -> TestPlan<T> {
-    let mut plan = TestPlan::new("bandwidth-test");
+    let mut plan = TestPlan::new("latency-test");
 
     plan.test_case("ping_1s", tests::ping_1s);
     plan.test_case("ping_100ms", tests::ping_100ms);
