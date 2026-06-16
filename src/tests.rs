@@ -81,7 +81,7 @@ struct PingStats {
 }
 
 fn ping_raw(shell: &mut impl CommandExecutor, ipaddr: &str, args: &str) -> Result<String, Error> {
-    shell.with_timeout_secs(15, |sh| sh.cmd(&format!("ping {ipaddr} {args}")))
+    shell.with_timeout_secs(20, |sh| sh.cmd(&format!("ping {ipaddr} {args}")))
 }
 
 fn ping_helper_with_stats(
