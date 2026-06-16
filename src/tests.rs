@@ -538,7 +538,8 @@ pub fn verify_log_messages(
     }
 
     if failures >= 1 {
-        log::info!("Kernel log review failed\n{dmesg}");
+        fs::write("verify_log_messages.dmesg", &dmesg)?;
+        log::debug!("Kernel log review failed\n{dmesg}");
 
         // We don't really want future calls to verify_log_messages() to fail
         // so we'd better clear the dmesg buffer (this will discard a couple
