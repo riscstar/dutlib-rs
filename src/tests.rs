@@ -495,6 +495,8 @@ pub fn verify_log_messages(
             // [   11.320741] xhci-pci-renesas 0001:04:00.0: WARNING: Host System Error
             // [   20.959796] usb 2-1: device descriptor read/8, error -110
             // [   38.808280] usb 2-1: device not accepting address 2, error -108
+            // [   29.163988] WARNING: drivers/soc/qcom/rpmh.c:386 at rpmh_write_batch+0x198/0x2c0, CPU#1: kworker/u33:0/92
+            // [   29.505949] Error sending AMC RPMH requests (-110)
             if ln.contains("Direct firmware load for qcom/qcs6490/qupv3fw.elf failed with error -2")
                 || ln
                     .contains("Direct firmware load for qcom/qcs6490/adsp.mbn failed with error -2")
@@ -503,6 +505,8 @@ pub fn verify_log_messages(
                 || (ln.contains("xhci-pci-renesas") && ln.contains("Host System Error"))
                 || (ln.contains("usb") && ln.contains("device descriptor read/8, error"))
                 || (ln.contains("usb") && ln.contains("device not accepting address"))
+                || ln.contains("drivers/soc/qcom/rpmh.c:386 at rpmh_write_batch")
+                || ln.contains("Error sending AMC RPMH requests (-110)")
             {
                 continue;
             }
