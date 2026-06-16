@@ -21,30 +21,53 @@ use crate::{
     tracker::UndoTracker,
 };
 
+pub struct DriverInfo {
+    pub eth_driver: String,
+    pub bus_info: String,
+    pub bus_driver: String,
+}
+
+impl DriverInfo {
+    pub fn new(shell: &mut impl CommandExecutor, adapter: &str) -> Result<Self, Error> {
+        let mut eth_driver = "unknown";
+        let mut bus_info = "unknown";
+
+        // Use ethtool to check for driver information
+        let reply = shell.cmd(&format!("ethtool --driver {adapter}"))?;
+        for ln in reply.lines() {
+            if ln.starts_with("driver: ") {
+                eth_driver = &ln["driver: ".len()..];
+            }
+            if ln.starts_with("bus-info: ") {
+                bus_info = &ln["bus-info: ".len()..];
+            }
+        }
+
+        // Check the bus driver uses using sysfs
+        let reply = shell.cmd(&format!("find /sys/bus/*/drivers/ -name \"{bus_info}\""))?;
+        let bus_driver = match reply.lines().next() {
+            Some(first_line) => first_line.split('/').skip(5).next().unwrap_or("unknown"),
+            None => "unknown",
+        };
+
+        Ok(Self {
+            eth_driver: eth_driver.to_string(),
+            bus_info: bus_info.to_string(),
+            bus_driver: bus_driver.to_string(),
+        })
+    }
+}
+
 /// Show what drivers have bound to the adapter
 pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
-    let mut eth_driver = "unknown";
-    let mut bus_info = "unknown";
-
-    // Use ethtool to check for driver information
-    let reply = shell.cmd(&format!("ethtool --driver {adapter}"))?;
-    for ln in reply.lines() {
-        if ln.starts_with("driver: ") {
-            eth_driver = &ln["driver: ".len()..];
-        }
-        if ln.starts_with("bus-info: ") {
-            bus_info = &ln["bus-info: ".len()..];
-        }
-    }
-
-    // Check the bus driver uses using sysfs
-    let reply = shell.cmd(&format!("find /sys/bus/*/drivers/ -name \"{bus_info}\""))?;
-    let bus_driver = match reply.lines().next() {
-        Some(first_line) => first_line.split('/').skip(5).next().unwrap_or("unknown"),
-        None => "unknown",
-    };
+    let DriverInfo {
+        eth_driver,
+        bus_info,
+        bus_driver,
+    } = DriverInfo::new(shell, adapter)?;
 
     log::info!("driver_info: {bus_info} is bound to {eth_driver}/{bus_driver}");
+
     Ok(())
 }
 
@@ -275,6 +298,12 @@ pub fn iperf3_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u3
 }
 
 pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let driver_info = DriverInfo::new(shell, &config.adapter)?;
+    if driver_info.bus_driver == "igc" {
+        log::info!("ethtool_selftest: Adapter is not a STMMAC device, skipping test");
+        return Ok(0);
+    }
+
     let mut failures = 0;
     let adapter = &config.adapter;
 
