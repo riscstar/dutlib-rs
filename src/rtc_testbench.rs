@@ -144,6 +144,12 @@ impl TrafficClass {
         }
     }
 
+    pub fn disable(mut self) -> Self {
+        let config = self.inner_mut();
+        config.enabled = false;
+        self
+    }
+
     pub fn set_xdp(mut self, skb_mode: bool, zc_mode: bool, wakeup_mode: bool) -> Self {
         let config = self.inner_mut();
         config.xdp_enabled = Some(true);
@@ -345,6 +351,10 @@ impl TrafficConfig {
     }
 
     pub fn to_value(self, prefix: &str) -> serde_yaml::Value {
+        if !self.enabled {
+            return serde_yaml::from_str(&format!("{prefix}Enabled: false")).unwrap();
+        }
+
         match serde_yaml::to_value(self).expect("TrafficClass is not YAML compatible") {
             serde_yaml::Value::Mapping(map) => {
                 // Transform the mapping using an iterator pipeline

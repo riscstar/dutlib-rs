@@ -314,6 +314,7 @@ pub fn partner_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("tsn-test");
 
+    plan.test_case("profinet_cyclic_only", tsn_tests::profinet_cyclic_only);
     plan.test_case("profinet_rt", tsn_tests::profinet_rt);
 
     plan

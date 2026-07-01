@@ -330,6 +330,132 @@ pub fn mac_setup(
         stmmac_setup(shell, interface, cycle_time_ns)
     }
 }
+pub fn config_cyclic_only(
+    context: &TrafficContext,
+    shell: &mut impl CommandExecutor,
+    partner: &mut impl CommandExecutor,
+    cycle_time_ns: u64,
+) -> Result<(), Error> {
+    let rtc = TrafficClass::rtc()
+        //.set_xdp(false, true, true)
+        .set_vid(100)
+        .set_frame_count_and_length(1, 128)
+        .set_txrx_queue(1)
+        .set_socket_priority(7)
+        .set_thread_cpu_and_priority(1, 98);
+
+    let rta = TrafficClass::rta().disable();
+    let dcp = TrafficClass::dcp().disable();
+    let lldp = TrafficClass::lldp().disable();
+    let udp_high = TrafficClass::udp_high().disable();
+    let udp_low = TrafficClass::udp_low().disable();
+
+    let reference = rtc_testbench::Config {
+        application: rtc_testbench::Application {
+            application_clock_id: "CLOCK_TAI".to_string(),
+            application_base_cycle_time_ns: cycle_time_ns.to_string(),
+            application_tx_base_offset_ns: ((cycle_time_ns * 85) / 100).to_string(),
+            application_rx_base_offset_ns: ((cycle_time_ns * 20) / 100).to_string(),
+            application_xdp_program: "xdp_kern_profinet_vid100.o".to_string(),
+        },
+
+        rtc: rtc.clone().with_reference(&context).to_value(),
+        rta: rta.clone().with_reference(&context).to_value(),
+        dcp: dcp.clone().with_reference(&context).to_value(),
+        lldp: lldp.clone().with_reference(&context).to_value(),
+        udp_high: udp_high.clone().with_reference(&context).to_value(),
+        udp_low: udp_low.clone().with_reference(&context).to_value(),
+
+        log: rtc_testbench::Log {
+            log_thread_priority: 1,
+            log_thread_cpu: 0,
+            log_file: "reference.log".to_string(),
+            log_level: "Info".to_string(),
+        },
+        debug: rtc_testbench::Debug {
+            debug_stop_trace_on_outlier: false,
+            debug_stop_trace_on_error: false,
+            debug_monitor_mode: false,
+            debug_monitor_destination: "44:44:44:44:44:44".to_string(),
+        },
+    };
+
+    shell.cmd(format!(
+        "cat > reference.yaml <<\"EOF\"\n{}\nEOF",
+        reference.to_string()
+    ))?;
+
+    let mut mirror = reference.clone();
+    mirror.rtc = rtc.with_mirror(&context).to_value();
+    mirror.rta = rta.with_mirror(&context).to_value();
+    mirror.dcp = dcp.with_mirror(&context).to_value();
+    mirror.lldp = lldp.with_mirror(&context).to_value();
+    mirror.udp_high = udp_high.with_mirror(&context).to_value();
+    mirror.udp_low = udp_low.with_mirror(&context).to_value();
+    mirror.log.log_file = "mirror.log".to_string();
+
+    partner.cmd(format!(
+        "cat > mirror.yaml <<\"EOF\"\n{}\nEOF",
+        mirror.to_string()
+    ))?;
+
+    Ok(())
+}
+
+pub fn profinet_cyclic_only(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let cycle_time_ns = 1_000_000;
+    let mut failures = 0;
+
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let context = traffic_context(config, shell, partner)?;
+
+    let mut shell_teardown = mac_setup(shell, &context.reference_interface, cycle_time_ns)?;
+    let mut partner_teardown = mac_setup(partner, &context.mirror_interface, cycle_time_ns)?;
+
+    config_cyclic_only(&context, shell, partner, cycle_time_ns)?;
+
+    let before = ethtool::statistics(shell, &config.adapter)?;
+    run_rtc_benchmark(shell, partner, 60)?;
+    let after = ethtool::statistics(shell, &config.adapter)?;
+
+    let reference = shell.cmd("tail -1 reference.log")?;
+    let mirror = partner.cmd("tail -1 mirror.log")?;
+    let stats = (
+        rtc_testbench::parse_log_line(reference),
+        rtc_testbench::parse_log_line(mirror),
+    );
+
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    match &stats.0 {
+        Some(stats) => {
+            for tag in ["Rtc"] {
+                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
+                    log::error!("{tag}Received is zero");
+                    failures += 1;
+                }
+            }
+        }
+        None => {
+            log::error!("Failed to parse reference stats");
+            failures += 1;
+        }
+    }
+
+    rtc_testbench::log_traffic_stats(&stats.0);
+    rtc_testbench::log_traffic_stats(&stats.1);
+
+    let packet_counts = after - before;
+    log::info!("Packet counts: {packet_counts:?}");
+
+    Ok(failures)
+}
 
 pub fn config_profinet_rt(
     context: &TrafficContext,
