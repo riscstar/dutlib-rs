@@ -118,7 +118,7 @@ pub fn napi_defer_hard_irqs(
     tracker.sysfs(
         shell,
         format!("/sys/class/net/{interface}/gro_flush_timeout"),
-        format!("{}", cycle_time_ns * 2),
+        format!("{}", cycle_time_ns / 10),
     )?;
 
     Ok(())
