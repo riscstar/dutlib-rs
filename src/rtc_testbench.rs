@@ -429,15 +429,15 @@ impl fmt::Display for TrafficStats {
         // Write the formatted output
         write!(
             f,
-            "TxRx {:7}/{:<7} RTT {:>5}/{:>5}/{:>7} OneWay {:>5}/{:>5}/{:>7} Out {:7}/{:<7}",
+            "TxRx {:7}/{:<7} RTT {:>5}/{:>7}/{:>5} OneWay {:>5}/{:>7}/{:>5} Out {:7}/{:<7}",
             self.sent,
             self.received,
             fmt_us_u64(self.rtt_min_us),
-            fmt_us_u64(self.rtt_max_us),
             fmt_us_f64(self.rtt_avg_us),
+            fmt_us_u64(self.rtt_max_us),
             fmt_us_u64(self.one_way_min_us),
-            fmt_us_u64(self.one_way_max_us),
             fmt_us_f64(self.one_way_avg_us),
+            fmt_us_u64(self.one_way_max_us),
             self.rtt_outliers,
             self.one_way_outliers
         )
