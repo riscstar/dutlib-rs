@@ -36,112 +36,6 @@ pub fn traffic_context(
     Ok(context)
 }
 
-pub fn config_profinet_rt(
-    context: &TrafficContext,
-    shell: &mut impl CommandExecutor,
-    partner: &mut impl CommandExecutor,
-) -> Result<(), Error> {
-    let rtc = TrafficClass::rtc()
-        .set_xdp(false, true, true)
-        .set_vid(100)
-        .set_frame_count_and_length(32, 128)
-        .set_txrx_queue(1)
-        .set_socket_priority(7)
-        .set_thread_cpu_and_priority(1, 98);
-
-    let rta = TrafficClass::rta()
-        .set_xdp(false, true, true)
-        .set_vid(100)
-        .set_burst_period_ns("200ms")
-        .set_frame_count_and_length(32, 128)
-        .set_txrx_queue(2)
-        .set_socket_priority(6)
-        .set_thread_cpu_and_priority(2, 97);
-
-    let dcp = TrafficClass::dcp()
-        .set_vid(100)
-        .set_burst_period_ns("2s")
-        .set_frame_count_and_length(1, 200)
-        .set_txrx_queue(3)
-        .set_socket_priority(5)
-        .set_thread_cpu_and_priority(3, 53)
-        .set_destination("01:0e:cf:00:00:00");
-
-    let lldp = TrafficClass::lldp()
-        .set_burst_period_ns("5s")
-        .set_frame_count_and_length(1, 200)
-        .set_txrx_queue(3)
-        .set_socket_priority(5)
-        .set_thread_cpu_and_priority(4, 52)
-        .set_destination("01:80:c2:00:00:0e");
-
-    let udp_high = TrafficClass::udp_high()
-        .set_burst_period_ns("1s")
-        .set_frame_count_and_length(1, 1400)
-        .set_txrx_queue(3)
-        .set_socket_priority(5)
-        .set_thread_cpu_and_priority(5, 51)
-        .set_port(6666);
-    let udp_low = TrafficClass::udp_low()
-        .set_burst_period_ns("1s")
-        .set_frame_count_and_length(1, 1400)
-        .set_txrx_queue(0)
-        .set_socket_priority(4)
-        .set_thread_cpu_and_priority(0, 51)
-        .set_port(6667);
-
-    let reference = rtc_testbench::Config {
-        application: rtc_testbench::Application {
-            application_clock_id: "CLOCK_TAI".to_string(),
-            application_base_cycle_time_ns: "8ms".to_string(),
-            application_tx_base_offset_ns: "6800us".to_string(),
-            application_rx_base_offset_ns: "800us".to_string(),
-            application_xdp_program: "xdp_kern_profinet_vid100.o".to_string(),
-        },
-
-        rtc: rtc.clone().with_reference(&context).to_value(),
-        rta: rta.clone().with_reference(&context).to_value(),
-        dcp: dcp.clone().with_reference(&context).to_value(),
-        lldp: lldp.clone().with_reference(&context).to_value(),
-        udp_high: udp_high.clone().with_reference(&context).to_value(),
-        udp_low: udp_low.clone().with_reference(&context).to_value(),
-
-        log: rtc_testbench::Log {
-            log_thread_priority: 1,
-            log_thread_cpu: 0,
-            log_file: "reference.log".to_string(),
-            log_level: "Info".to_string(),
-        },
-        debug: rtc_testbench::Debug {
-            debug_stop_trace_on_outlier: false,
-            debug_stop_trace_on_error: false,
-            debug_monitor_mode: false,
-            debug_monitor_destination: "44:44:44:44:44:44".to_string(),
-        },
-    };
-
-    shell.cmd(format!(
-        "cat > reference.yaml <<\"EOF\"\n{}\nEOF",
-        reference.to_string()
-    ))?;
-
-    let mut mirror = reference.clone();
-    mirror.rtc = rtc.with_mirror(&context).to_value();
-    mirror.rta = rta.with_mirror(&context).to_value();
-    mirror.dcp = dcp.with_mirror(&context).to_value();
-    mirror.lldp = lldp.with_mirror(&context).to_value();
-    mirror.udp_high = udp_high.with_mirror(&context).to_value();
-    mirror.udp_low = udp_low.with_mirror(&context).to_value();
-    mirror.log.log_file = "mirror.log".to_string();
-
-    partner.cmd(format!(
-        "cat > mirror.yaml <<\"EOF\"\n{}\nEOF",
-        mirror.to_string()
-    ))?;
-
-    Ok(())
-}
-
 pub fn run_rtc_benchmark(
     shell: &mut impl CommandExecutor,
     partner: &mut SudoExecutor,
@@ -383,13 +277,17 @@ pub fn stmmac_setup(
             "map 0 0 0 0 0 3 2 1 0 0 0 0 0 0 0 0 ",
             "queues 1@0 1@1 1@2 1@3 ",
             "base-time {} ",
-            "sched-entry S 0x02 100000 ",
-            "sched-entry S 0x04 100000 ",
-            "sched-entry S 0x08 400000 ",
-            "sched-entry S 0x01 400000 ",
+            "sched-entry S 0x02 {} ",
+            "sched-entry S 0x04 {} ",
+            "sched-entry S 0x08 {} ",
+            "sched-entry S 0x01 {} ",
             "flags 0x02"
         ),
-        interface, base_time
+        interface, base_time,
+        (cycle_time_ns * 10) / 100,
+        (cycle_time_ns * 10) / 100,
+        (cycle_time_ns * 40) / 100,
+        (cycle_time_ns * 40) / 100
     ))?;
     tracker.add(format!("tc qdisc del dev {interface} root"));
 
@@ -433,7 +331,115 @@ pub fn mac_setup(
     }
 }
 
+pub fn config_profinet_rt(
+    context: &TrafficContext,
+    shell: &mut impl CommandExecutor,
+    partner: &mut impl CommandExecutor,
+    cycle_time_ns: u64,
+) -> Result<(), Error> {
+    let rtc = TrafficClass::rtc()
+        .set_xdp(false, true, true)
+        .set_vid(100)
+        .set_frame_count_and_length(32, 128)
+        .set_txrx_queue(1)
+        .set_socket_priority(7)
+        .set_thread_cpu_and_priority(1, 98);
+
+    let rta = TrafficClass::rta()
+        .set_xdp(false, true, true)
+        .set_vid(100)
+        .set_burst_period_ns("200ms")
+        .set_frame_count_and_length(32, 128)
+        .set_txrx_queue(2)
+        .set_socket_priority(6)
+        .set_thread_cpu_and_priority(2, 97);
+
+    let dcp = TrafficClass::dcp()
+        .set_vid(100)
+        .set_burst_period_ns("2s")
+        .set_frame_count_and_length(1, 200)
+        .set_txrx_queue(3)
+        .set_socket_priority(5)
+        .set_thread_cpu_and_priority(3, 53)
+        .set_destination("01:0e:cf:00:00:00");
+
+    let lldp = TrafficClass::lldp()
+        .set_burst_period_ns("5s")
+        .set_frame_count_and_length(1, 200)
+        .set_txrx_queue(3)
+        .set_socket_priority(5)
+        .set_thread_cpu_and_priority(4, 52)
+        .set_destination("01:80:c2:00:00:0e");
+
+    let udp_high = TrafficClass::udp_high()
+        .set_burst_period_ns("1s")
+        .set_frame_count_and_length(1, 1400)
+        .set_txrx_queue(3)
+        .set_socket_priority(5)
+        .set_thread_cpu_and_priority(5, 51)
+        .set_port(6666);
+    let udp_low = TrafficClass::udp_low()
+        .set_burst_period_ns("1s")
+        .set_frame_count_and_length(1, 1400)
+        .set_txrx_queue(0)
+        .set_socket_priority(4)
+        .set_thread_cpu_and_priority(0, 51)
+        .set_port(6667);
+
+    let reference = rtc_testbench::Config {
+        application: rtc_testbench::Application {
+            application_clock_id: "CLOCK_TAI".to_string(),
+            application_base_cycle_time_ns: cycle_time_ns.to_string(),
+            application_tx_base_offset_ns: ((cycle_time_ns * 85) / 100).to_string(),
+            application_rx_base_offset_ns: ((cycle_time_ns * 20) / 100).to_string(),
+            application_xdp_program: "xdp_kern_profinet_vid100.o".to_string(),
+        },
+
+        rtc: rtc.clone().with_reference(&context).to_value(),
+        rta: rta.clone().with_reference(&context).to_value(),
+        dcp: dcp.clone().with_reference(&context).to_value(),
+        lldp: lldp.clone().with_reference(&context).to_value(),
+        udp_high: udp_high.clone().with_reference(&context).to_value(),
+        udp_low: udp_low.clone().with_reference(&context).to_value(),
+
+        log: rtc_testbench::Log {
+            log_thread_priority: 1,
+            log_thread_cpu: 0,
+            log_file: "reference.log".to_string(),
+            log_level: "Info".to_string(),
+        },
+        debug: rtc_testbench::Debug {
+            debug_stop_trace_on_outlier: false,
+            debug_stop_trace_on_error: false,
+            debug_monitor_mode: false,
+            debug_monitor_destination: "44:44:44:44:44:44".to_string(),
+        },
+    };
+
+    shell.cmd(format!(
+        "cat > reference.yaml <<\"EOF\"\n{}\nEOF",
+        reference.to_string()
+    ))?;
+
+    let mut mirror = reference.clone();
+    mirror.rtc = rtc.with_mirror(&context).to_value();
+    mirror.rta = rta.with_mirror(&context).to_value();
+    mirror.dcp = dcp.with_mirror(&context).to_value();
+    mirror.lldp = lldp.with_mirror(&context).to_value();
+    mirror.udp_high = udp_high.with_mirror(&context).to_value();
+    mirror.udp_low = udp_low.with_mirror(&context).to_value();
+    mirror.log.log_file = "mirror.log".to_string();
+
+    partner.cmd(format!(
+        "cat > mirror.yaml <<\"EOF\"\n{}\nEOF",
+        mirror.to_string()
+    ))?;
+
+    Ok(())
+}
+
 pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let cycle_time_ns = 1_000_000;
     let mut failures = 0;
 
     let mut executor = SudoExecutor::new();
@@ -441,10 +447,10 @@ pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<
 
     let context = traffic_context(config, shell, partner)?;
 
-    let mut shell_teardown = mac_setup(shell, &context.reference_interface, 1000000)?;
-    let mut partner_teardown = mac_setup(partner, &context.mirror_interface, 1000000)?;
+    let mut shell_teardown = mac_setup(shell, &context.reference_interface, cycle_time_ns)?;
+    let mut partner_teardown = mac_setup(partner, &context.mirror_interface, cycle_time_ns)?;
 
-    config_profinet_rt(&context, shell, partner)?;
+    config_profinet_rt(&context, shell, partner, cycle_time_ns)?;
     let before = ethtool::statistics(shell, &config.adapter)?;
     run_rtc_benchmark(shell, partner, 60)?;
     let after = ethtool::statistics(shell, &config.adapter)?;
@@ -478,8 +484,6 @@ pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     rtc_testbench::log_traffic_stats(&stats.1);
 
     let packet_counts = after - before;
-    log::info!("Packet counts: {packet_counts:?}");
-    let packet_counts = packet_counts.normalize();
     log::info!("Packet counts: {packet_counts:?}");
 
     Ok(failures)
