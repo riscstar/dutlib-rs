@@ -154,7 +154,7 @@ pub fn run_rtc_benchmark(
 
     // Make sure we don't read results from stale log files!
     shell.cmd("rm reference.log")?;
-    partner.cmd("rm reference.log")?;
+    partner.cmd("rm mirror.log")?;
 
     let (reference_result, mirror_result) = thread::scope(|s| {
         let mirror = s.spawn(|| {
