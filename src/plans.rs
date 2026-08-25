@@ -197,7 +197,7 @@ pub fn bandwidth_test<T: CommandExecutor>() -> TestPlan<T> {
     plan.test_case("iperf3_intervals_rx", tests::iperf3_intervals_rx);
     plan.test_case("iperf3_udp_bidir", tests::iperf3_udp_bidir);
     plan.test_case("iperf3_udp_tx", tests::iperf3_udp_tx);
-    plan.test_case("iperf3_udp_tx", tests::iperf3_udp_rx);
+    plan.test_case("iperf3_udp_rx", tests::iperf3_udp_rx);
     plan.test_case("iperf3_x16_bidir", tests::iperf3_x16_bidir);
     plan.test_case("iperf3_x16_tx", tests::iperf3_x16_tx);
     plan.test_case("iperf3_x16_rx", tests::iperf3_x16_rx);
