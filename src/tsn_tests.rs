@@ -203,37 +203,27 @@ pub fn igc_setup(
     tracker.add(format!("ethtool -K {interface} ntuple off"));
 
     // Steer based in VLAN priority
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0xe000 m 0x1fff action {} ", rx_queues[0] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0xe000 m 0x1fff action {} ", rx_queues[0]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0xc000 m 0x1fff action {} ", rx_queues[1] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0xc000 m 0x1fff action {} ", rx_queues[1]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0xa000 m 0x1fff action {} ", rx_queues[2] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0xa000 m 0x1fff action {} ", rx_queues[2]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0x8000 m 0x1fff action {} ", rx_queues[3] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0x8000 m 0x1fff action {} ", rx_queues[3]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0x6000 m 0x1fff action {} ", rx_queues[4] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0x6000 m 0x1fff action {} ", rx_queues[4]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0x4000 m 0x1fff action {} ", rx_queues[5] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0x4000 m 0x1fff action {} ", rx_queues[5]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0x2000 m 0x1fff action {} ", rx_queues[6] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0x2000 m 0x1fff action {} ", rx_queues[6]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether vlan 0xe000 m 0x1fff action {} ", rx_queues[7] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether vlan 0xe000 m 0x1fff action {} ", rx_queues[7]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
 
     // Steer PTP and LLDP by EtherType
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether proto 0x88f7 action {} ", rx_queues[8] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether proto 0x88f7 action {} ", rx_queues[8]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
-    let reply = shell.cmd(format!(
-        "ethtool -N {interface} flow-type ether proto 0x88f7 action {} ", rx_queues[9] ))?;
+    let reply = shell.cmd(format!("ethtool -N {interface} flow-type ether proto 0x88f7 action {} ", rx_queues[9]))?;
     tracker.add(format!( "ethtool -N {interface} delete {}", reply.get(19..).unwrap_or("") ));
 
     // Increase ring parameters
@@ -292,7 +282,7 @@ pub fn stmmac_setup(
     tracker.add(format!("tc qdisc del dev {interface} root"));
 
     // Rx Assignment is the same as Tx Assignment
-    let rx_queues = [ 3, 3, 3, 1, 2, 3, 3, 0, 3, 3 ];
+    let rx_queues = [3, 3, 3, 1, 2, 3, 3, 0, 3, 3];
 
     shell.cmd(format!("tc qdisc add dev {interface} ingress"))?;
     tracker.add(format!("tc qdisc del dev {interface} ingress"));
