@@ -449,6 +449,13 @@ pub fn verify_log_messages(
                 continue;
             }
 
+            // The driver provokes these errors but we don't expect frequent
+            // hot-unplug so the concerns w.r.t. memory leaks are not important.
+            // [   13.712580] OF: overlay: WARNING: memory leak will occur if overlay removed, property: /__symbols__/tc9564_msigen1
+            if ln.contains("WARNING: memory leak will occur if overlay removed") {
+                continue;
+            }
+
             // [   65.724949] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: error -ENODEV: cannot probe xgmac3
             // [   32.444674] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: error -ENOTSUPP: unsupported phy speed
             // [   32.444679] dwmac_tc956x.dwmac-tc956x pcie_tc956x.dwmac-tc956x.0: probe with driver dwmac_tc956x.dwmac-tc956x failed with error -524
