@@ -16,6 +16,7 @@ words = [
     "mtu",
     "phy",
     "profinet",
+    "qdisc",
     "replsession",
     "rta",
     "rtc",

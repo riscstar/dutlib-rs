@@ -17,7 +17,7 @@ use crate::{
     ethtool::{self, AdapterInfo},
     ip,
     native::SudoExecutor,
-    plans,
+    plans, proc,
     tracker::UndoTracker,
 };
 
@@ -1273,6 +1273,78 @@ pub fn iperf3_udp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Re
         log::info!("iperf3_udp_bidir: Packet loss OK: TX {tx:0.1}, RX {rx:0.1}");
     }
 
+    Ok(failures)
+}
+
+/// Check that all the transmit queues are working.
+///
+/// Run relatively slow iperf3 UDP transmit tests in a loop until all transmit
+/// queues have been used at least once (as verified by the interrupt count).
+/// Each loop iteration is checked to ensure minimal packet loss.
+///
+/// This test is motivated by problems observed with the COE on TC9564.
+///
+/// Coverage is effectively probabilistic: the queue is selected by a hashing
+/// algorithm and the only thing changing should be the process ID and we can't
+/// directly control that. Therefore we run until all queues have been exercised
+/// or until a safety limit is reached.
+pub fn iperf3_udp_tx_all_queues(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let speed_mbps = ethtool::get_speed(shell, &config.adapter);
+    let bitrate = (speed_mbps * 0.1) as u32;
+
+    let pattern = format!("{}:tx-", config.adapter);
+    let then = proc::interrupts(shell)?.filter(&pattern);
+    if then.len() == 0 {
+        log::warn!("No TX interrupts found");
+        return Ok(0);
+    }
+
+    let mut failures = 0;
+
+    for i in 0..30 {
+        let stats = iperf3_new_helper(
+            config,
+            shell,
+            &format!("-i 0 -t 1 --udp --bitrate {bitrate}M"),
+        )?;
+
+        if stats.end.streams.len() != 1 {
+            log::error!("Unexpected reply from iperf3");
+            return Ok(1);
+        }
+
+        let tx = get_lost_percent(stats.end.streams[0].udp);
+        if tx > 1.0 {
+            log::error!("iperf3_udp_tx: Packet loss too high: TX {tx:0.1}");
+            failures += 1;
+        }
+
+        // Now let's check to see if we have exercises all the TX queues yet
+        let delta = proc::interrupts(shell)?.filter(&pattern) - then.clone();
+
+        let mut waiting_for = Vec::new();
+        for interrupt in delta.iter() {
+            if interrupt.count() < 250 {
+                waiting_for.push(interrupt.name.as_str());
+            }
+        }
+        if waiting_for.is_empty() {
+            log::info!(
+                "iperf3_udp_tx_all_queues: Exercise all TX queues after {} iterations",
+                i + 1
+            );
+            log::info!("Interrupt counts:\n{delta}");
+            return Ok(failures);
+        }
+
+        waiting_for.sort();
+        log::info!("Waiting for: {}", waiting_for.join(" "));
+    }
+
+    log::warn!("iperf3_udp_tx_all_queues: Failed to exercise all TX queues");
     Ok(failures)
 }
 

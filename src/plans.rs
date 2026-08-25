@@ -289,6 +289,7 @@ pub fn phy_quick_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn system_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("system-test");
 
+    plan.test_case("iperf3_udp_tx_all_queues", tests::iperf3_udp_tx_all_queues);
     plan.test_case("suspend_resume", tests::suspend_resume);
     plan.test_case("suspend_resume", tests::suspend_resume);
     plan.test_case("disable_checksum_offload", tests::disable_checksum_offload);

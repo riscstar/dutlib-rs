@@ -12,6 +12,7 @@ pub mod ethtool;
 pub mod ip;
 pub mod native;
 pub mod plans;
+pub mod proc;
 pub mod rtc_testbench;
 pub mod tests;
 pub mod tracker;
