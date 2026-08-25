@@ -266,9 +266,17 @@ fn all_tests(config: Config, args: AllTestsCli) -> Result<(), Error> {
 
     let mut failures = 0;
 
+    let mut first_one = true;
+
     // phy-quick-test is a subset of phy-an-test so no need to run that one
     for sub_plan in plan.iter().filter(|p| p.name() != "phy-quick-test") {
-        let result = sub_plan.run(&config, &mut console);
+        let result = if first_one {
+            first_one = false;
+            sub_plan.run(&config, &mut console)
+        } else {
+            // run without applying any tuning
+            sub_plan.run_with_path(&config, &mut console, "")
+        };
         match result {
             Ok(n) => {
                 failures += n;
