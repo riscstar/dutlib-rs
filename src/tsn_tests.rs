@@ -571,9 +571,11 @@ pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     let mut partner_teardown = mac_setup(partner, &context.mirror_interface, cycle_time_ns)?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns)?;
+    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
     let before = ethtool::statistics(shell, &config.adapter)?;
     run_rtc_benchmark(shell, partner, 60)?;
     let after = ethtool::statistics(shell, &config.adapter)?;
+    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
     let reference = shell.cmd("tail -1 reference.log")?;
     let mirror = partner.cmd("tail -1 mirror.log")?;
@@ -604,7 +606,9 @@ pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     rtc_testbench::log_traffic_stats(&stats.1);
 
     let packet_counts = after - before;
-    log::info!("Packet counts: {packet_counts:?}");
+    log::info!("DUT packet counts: {packet_counts:?}");
+    let packet_counts = after_partner - before_partner;
+    log::info!("LP packet counts:  {packet_counts:?}");
 
     Ok(failures)
 }
