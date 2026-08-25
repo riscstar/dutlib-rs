@@ -183,7 +183,8 @@ pub fn igc_setup(
     shell.cmd(format!(
         concat!(
             "tc qdisc replace dev {} handle 100 parent root taprio num_tc 4 ",
-            "map 3 3 3 3 3 2 1 0 3 3 3 3 3 3 3 3 ",
+            //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+            "map  3  3  3  3  3  2  1  0  3  3  3  3  3  3  3  3 ",
             "queues 1@0 1@1 1@2 1@3 ",
             "base-time {} ",
             "sched-entry S 0x01 100000 ",
@@ -261,11 +262,12 @@ pub fn stmmac_setup(
     // TX Q 1 - RTC
     // TX Q 2 - RTA
     // TX Q 3 - DCP, LLDP, UDP High
-    shell.cmd(format!(
+    let qdisc = format!(
         concat!(
             "tc qdisc replace dev {} handle 100 parent root taprio num_tc 4 ",
-            "map 0 0 0 0 0 3 2 1 0 0 0 0 0 0 0 0 ",
-            "queues 1@0 1@1 1@2 1@3 ",
+            //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+            "map  0  0  0  0  0  3  2  1  0  0  0  0  0  0  0  0 ",
+            "queues 1@0 1@1 1@3 1@2 ",
             "base-time {} ",
             "sched-entry S 0x02 {} ",
             "sched-entry S 0x04 {} ",
@@ -273,12 +275,14 @@ pub fn stmmac_setup(
             "sched-entry S 0x01 {} ",
             "flags 0x02"
         ),
-        interface, base_time,
+        interface,
+        base_time,
         (cycle_time_ns * 10) / 100,
         (cycle_time_ns * 10) / 100,
         (cycle_time_ns * 40) / 100,
         (cycle_time_ns * 40) / 100
-    ))?;
+    );
+    shell.cmd(qdisc)?;
     tracker.add(format!("tc qdisc del dev {interface} root"));
 
     // Rx Assignment is the same as Tx Assignment
