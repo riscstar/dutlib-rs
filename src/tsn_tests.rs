@@ -1,4 +1,4 @@
-use std::{thread, time::Duration};
+use std::{io, thread, time::Duration};
 
 use expectrl::Error;
 
@@ -10,7 +10,19 @@ use crate::{
     tracker::UndoTracker,
 };
 
-pub fn traffic_context(
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum QdiscUseCase {
+    Taprio,
+    Mqprio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XdpMode {
+    Enabled,
+    Disabled,
+}
+
+fn traffic_context(
     config: &Config,
     shell: &mut impl CommandExecutor,
     partner: &mut impl CommandExecutor,
@@ -36,7 +48,7 @@ pub fn traffic_context(
     Ok(context)
 }
 
-pub fn run_rtc_benchmark(
+fn run_rtc_benchmark(
     shell: &mut impl CommandExecutor,
     partner: &mut SudoExecutor,
     duration_secs: u64,
@@ -45,6 +57,8 @@ pub fn run_rtc_benchmark(
     let mirror_duration = duration_secs + startup_delay + 5;
     let reference_duration = duration_secs + startup_delay;
     let timeout = reference_duration + 30;
+
+    log::info!("Running RTC-Testbench (this will take {timeout} seconds)");
 
     // Make sure we don't read results from stale log files!
     shell.cmd("rm reference.log")?;
@@ -72,7 +86,7 @@ pub fn run_rtc_benchmark(
     Ok(())
 }
 
-pub fn load_kernel_modules(shell: &mut impl CommandExecutor) -> Result<(), Error> {
+fn load_kernel_modules(shell: &mut impl CommandExecutor) -> Result<(), Error> {
     shell.cmd("modprobe sch_taprio")?;
     shell.cmd("modprobe sch_mqprio")?;
     shell.cmd("modprobe sch_etf")?;
@@ -80,7 +94,7 @@ pub fn load_kernel_modules(shell: &mut impl CommandExecutor) -> Result<(), Error
     Ok(())
 }
 
-pub fn setup_threaded_napi(
+fn setup_threaded_napi(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
     tracker: &mut UndoTracker,
@@ -102,7 +116,7 @@ pub fn setup_threaded_napi(
     Ok(())
 }
 
-pub fn napi_defer_hard_irqs(
+fn napi_defer_hard_irqs(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
     cycle_time_ns: u64,
@@ -124,7 +138,7 @@ pub fn napi_defer_hard_irqs(
     Ok(())
 }
 
-pub fn boost_irq_threads(
+fn boost_irq_threads(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
     tracker: &mut UndoTracker,
@@ -147,10 +161,11 @@ pub fn boost_irq_threads(
 }
 
 #[rustfmt::skip]
-pub fn igc_setup(
+fn igc_setup(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
-    _cycle_time_ns: u64,
+    cycle_time_ns: u64,
+    use_case: QdiscUseCase,
 ) -> Result<UndoTracker, Error> {
     let interface = interface.as_ref();
     let mut tracker = UndoTracker::new();
@@ -173,6 +188,14 @@ pub fn igc_setup(
     // time and give the same base-time across everything sharing the same
     // PTP clock.
     let base_time = 0;
+
+    // TODO:igc currently uses hard coded cycle times and only supports taprio
+    if cycle_time_ns != 1000000 {
+        return Err(Error::IO(io::Error::other("unsupported cycle time")));
+    }
+    if use_case != QdiscUseCase::Taprio {
+        return Err(Error::IO(io::Error::other("unsupported use case")));
+    }
 
     // Tx Assignment with Qbv and full hardware offload: 20% RT, 80% non-RT.
     //
@@ -236,32 +259,23 @@ pub fn igc_setup(
     Ok(tracker)
 }
 
-#[rustfmt::skip]
-pub fn stmmac_setup(
+/// Tx Assignment with Qbv and full hardware offload: 20% RT, 80% non-RT.
+///
+/// TX Q 0 - Everything else
+/// TX Q 1 - RTC
+/// TX Q 2 - RTA
+/// TX Q 3 - DCP, LLDP, UDP High
+fn stmmac_setup_egress_taprio(
     shell: &mut impl CommandExecutor,
-    interface: impl AsRef<str>,
+    interface: &str,
     cycle_time_ns: u64,
-) -> Result<UndoTracker, Error> {
-    let interface = interface.as_ref();
-    let mut tracker = UndoTracker::new();
-
-    load_kernel_modules(shell)?;
-    napi_defer_hard_irqs(shell, interface, cycle_time_ns, &mut tracker)?;
-
-    shell.cmd(format!("ethtool -K {interface} rx-vlan-offload off"))?;
-    tracker.add(format!("ethtool -K {interface} rx-vlan-offload on"));
-
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
     // In principle setting base-time to zero will be projected forward in
     // time and give the same base-time across everything sharing the same
     // PTP clock.
     let base_time = 0;
 
-    // Tx Assignment with Qbv and full hardware offload: 20% RT, 80% non-RT.
-    //
-    // TX Q 0 - Everything else
-    // TX Q 1 - RTC
-    // TX Q 2 - RTA
-    // TX Q 3 - DCP, LLDP, UDP High
     let qdisc = format!(
         concat!(
             "tc qdisc replace dev {} handle 100 parent root taprio num_tc 4 ",
@@ -282,9 +296,59 @@ pub fn stmmac_setup(
         (cycle_time_ns * 40) / 100,
         (cycle_time_ns * 40) / 100
     );
+
     shell.cmd(qdisc)?;
     tracker.add(format!("tc qdisc del dev {interface} root"));
 
+    Ok(())
+}
+
+/// Profinet-RT style configuration using simple static priority (mqprio).
+///
+/// Uses four TX queues assigned as follows:
+///
+///  * TX Q 0 - Everything else
+///  * TX Q 1 - DCP, LLDP, UDP High
+///  * TX Q 2 - RTA
+///  * TX Q 3 - RTC
+fn stmmac_setup_egress_mqprio(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
+    let qdisc = format!(
+        concat!(
+            "tc qdisc replace dev {} handle 100 parent root mqprio ",
+            "num_tc 4 ",
+            //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+            "map  0  0  0  0  0  1  2  3  0  0  0  0  0  0  0  0 ",
+            //"map  3  3  3  3  3  2  1  0  3  3  3  3  3  3  3  3 ",
+            "queues 1@0 1@1 1@2 1@3 ",
+            "hw 1"
+        ),
+        interface,
+    );
+
+    shell.cmd(qdisc)?;
+    tracker.add(format!("tc qdisc del dev {interface} root"));
+
+    Ok(())
+}
+
+/// Rx Assignment for any 4 queue use-case
+///
+/// Queue assignment is the same as taprio assignment:
+///
+///  * RX Q 0 - Everything else
+///  * RX Q 1 - RTC
+///  * RX Q 2 - RTA
+///  * RX Q 3 - DCP, LLDP, UDP High
+#[rustfmt::skip]
+fn stmmac_setup_ingress_4_queue(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
     // Rx Assignment is the same as Tx Assignment
     let rx_queues = [3, 3, 3, 1, 2, 3, 3, 0, 3, 3];
 
@@ -305,6 +369,42 @@ pub fn stmmac_setup(
     shell.cmd(format!("tc filter add dev {interface} parent ffff: protocol 0x88f7 flower hw_tc {}", rx_queues[8]))?;
     shell.cmd(format!("tc filter add dev {interface} parent ffff: protocol 0x88cc flower hw_tc {}", rx_queues[9]))?;
 
+    Ok(())
+}
+
+fn stmmac_setup(
+    shell: &mut impl CommandExecutor,
+    interface: impl AsRef<str>,
+    cycle_time_ns: u64,
+    use_case: QdiscUseCase,
+) -> Result<UndoTracker, Error> {
+    let interface = interface.as_ref();
+    let mut tracker = UndoTracker::new();
+
+    load_kernel_modules(shell)?;
+    napi_defer_hard_irqs(shell, interface, cycle_time_ns, &mut tracker)?;
+
+    // TODO: There appear to be problems cleaning up after hardware offload in
+    //       stmmac. In particular the ingress filtering remains in effect after
+    //       hardware offload is disabled. We can work around this by disabling
+    //       and re-enabling the interface as part of the cleanup.
+    tracker.add(format!("ip link set {interface} up"));
+    tracker.add(format!("ip link set {interface} down"));
+
+    shell.cmd(format!("ethtool -K {interface} rx-vlan-offload off"))?;
+    tracker.add(format!("ethtool -K {interface} rx-vlan-offload on"));
+
+    match use_case {
+        QdiscUseCase::Taprio => {
+            stmmac_setup_egress_taprio(shell, interface, cycle_time_ns, &mut tracker)?;
+            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+        }
+        QdiscUseCase::Mqprio => {
+            stmmac_setup_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+        }
+    }
+
     boost_irq_threads(shell, interface, &mut tracker)?;
 
     Ok(tracker)
@@ -314,17 +414,21 @@ pub fn mac_setup(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
     cycle_time_ns: u64,
+    use_case: QdiscUseCase,
 ) -> Result<UndoTracker, Error> {
     let interface = interface.as_ref();
-    let driver_info = DriverInfo::new(shell, interface)?;
+    let connection = shell.connection();
+    log::info!("Setting up {interface} via {connection} connection");
 
-    if driver_info.eth_driver == "igc" {
-        igc_setup(shell, interface, cycle_time_ns)
+    let DriverInfo { eth_driver, .. } = DriverInfo::new(shell, interface)?;
+    if eth_driver == "igc" {
+        igc_setup(shell, interface, cycle_time_ns, use_case)
     } else {
-        stmmac_setup(shell, interface, cycle_time_ns)
+        stmmac_setup(shell, interface, cycle_time_ns, use_case)
     }
 }
-pub fn config_cyclic_only(
+
+fn config_cyclic_only(
     context: &TrafficContext,
     shell: &mut impl CommandExecutor,
     partner: &mut impl CommandExecutor,
@@ -408,8 +512,18 @@ pub fn profinet_cyclic_only(
 
     let context = traffic_context(config, shell, partner)?;
 
-    let mut shell_teardown = mac_setup(shell, &context.reference_interface, cycle_time_ns)?;
-    let mut partner_teardown = mac_setup(partner, &context.mirror_interface, cycle_time_ns)?;
+    let mut shell_teardown = mac_setup(
+        shell,
+        &context.reference_interface,
+        cycle_time_ns,
+        QdiscUseCase::Taprio,
+    )?;
+    let mut partner_teardown = mac_setup(
+        partner,
+        &context.mirror_interface,
+        cycle_time_ns,
+        QdiscUseCase::Taprio,
+    )?;
 
     config_cyclic_only(&context, shell, partner, cycle_time_ns)?;
 
@@ -451,28 +565,34 @@ pub fn profinet_cyclic_only(
     Ok(failures)
 }
 
-pub fn config_profinet_rt(
+fn config_profinet_rt(
     context: &TrafficContext,
     shell: &mut impl CommandExecutor,
     partner: &mut impl CommandExecutor,
     cycle_time_ns: u64,
+    xdp_mode: XdpMode,
 ) -> Result<(), Error> {
-    let rtc = TrafficClass::rtc()
-        .set_xdp(false, true, true)
+    let mut rtc = TrafficClass::rtc()
         .set_vid(100)
         .set_frame_count_and_length(32, 128)
         .set_txrx_queue(1)
         .set_socket_priority(7)
-        .set_thread_cpu_and_priority(1, 98);
+        .set_thread_cpu_and_priority(1, 98)
+        .set_tx_timestamp();
+    if xdp_mode == XdpMode::Enabled {
+        rtc = rtc.set_xdp(false, true, true);
+    }
 
-    let rta = TrafficClass::rta()
-        .set_xdp(false, true, true)
+    let mut rta = TrafficClass::rta()
         .set_vid(100)
         .set_burst_period_ns("200ms")
         .set_frame_count_and_length(32, 128)
         .set_txrx_queue(2)
         .set_socket_priority(6)
         .set_thread_cpu_and_priority(2, 97);
+    if xdp_mode == XdpMode::Enabled {
+        rta = rta.set_xdp(false, true, true);
+    }
 
     let dcp = TrafficClass::dcp()
         .set_vid(100)
@@ -498,9 +618,11 @@ pub fn config_profinet_rt(
         .set_socket_priority(5)
         .set_thread_cpu_and_priority(5, 51)
         .set_port(6666);
+
+    // This uses about 20% of the link bandwidth
     let udp_low = TrafficClass::udp_low()
         .set_burst_period_ns("1s")
-        .set_frame_count_and_length(1, 1400)
+        .set_frame_count_and_length(40000, 1400)
         .set_txrx_queue(0)
         .set_socket_priority(4)
         .set_thread_cpu_and_priority(0, 51)
@@ -558,7 +680,7 @@ pub fn config_profinet_rt(
     Ok(())
 }
 
-pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn profinet_rt_nop(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let cycle_time_ns = 1_000_000;
     let mut failures = 0;
 
@@ -567,10 +689,134 @@ pub fn profinet_rt(config: &Config, shell: &mut impl CommandExecutor) -> Result<
 
     let context = traffic_context(config, shell, partner)?;
 
-    let mut shell_teardown = mac_setup(shell, &context.reference_interface, cycle_time_ns)?;
-    let mut partner_teardown = mac_setup(partner, &context.mirror_interface, cycle_time_ns)?;
+    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
+    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
+    let before = ethtool::statistics(shell, &config.adapter)?;
+    run_rtc_benchmark(shell, partner, 60)?;
+    let after = ethtool::statistics(shell, &config.adapter)?;
+    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
-    config_profinet_rt(&context, shell, partner, cycle_time_ns)?;
+    let reference = shell.cmd("tail -1 reference.log")?;
+    let mirror = partner.cmd("tail -1 mirror.log")?;
+    let stats = (
+        rtc_testbench::parse_log_line(reference),
+        rtc_testbench::parse_log_line(mirror),
+    );
+
+    match &stats.0 {
+        Some(stats) => {
+            for tag in ["Rtc", "Rta", "Dcp", "Lldp", "UdpHigh", "UdpLow"] {
+                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
+                    log::error!("{tag}Received is zero");
+                    failures += 1;
+                }
+            }
+        }
+        None => {
+            log::error!("Failed to parse reference stats");
+            failures += 1;
+        }
+    }
+
+    rtc_testbench::log_traffic_stats(&stats.0);
+    rtc_testbench::log_traffic_stats(&stats.1);
+
+    let packet_counts = after - before;
+    log::info!("DUT packet counts: {packet_counts:?}");
+    let packet_counts = after_partner - before_partner;
+    log::info!("LP packet counts:  {packet_counts:?}");
+
+    Ok(failures)
+}
+
+pub fn profinet_rt_mqprio(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let cycle_time_ns = 1_000_000;
+    let mut failures = 0;
+
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let context = traffic_context(config, shell, partner)?;
+
+    let mut shell_teardown = mac_setup(
+        shell,
+        &context.reference_interface,
+        cycle_time_ns,
+        QdiscUseCase::Mqprio,
+    )?;
+    let mut partner_teardown = mac_setup(
+        partner,
+        &context.mirror_interface,
+        cycle_time_ns,
+        QdiscUseCase::Mqprio,
+    )?;
+
+    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
+    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
+    let before = ethtool::statistics(shell, &config.adapter)?;
+    run_rtc_benchmark(shell, partner, 60)?;
+    let after = ethtool::statistics(shell, &config.adapter)?;
+    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
+
+    let reference = shell.cmd("tail -1 reference.log")?;
+    let mirror = partner.cmd("tail -1 mirror.log")?;
+    let stats = (
+        rtc_testbench::parse_log_line(reference),
+        rtc_testbench::parse_log_line(mirror),
+    );
+
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    match &stats.0 {
+        Some(stats) => {
+            for tag in ["Rtc", "Rta", "Dcp", "Lldp", "UdpHigh", "UdpLow"] {
+                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
+                    log::error!("{tag}Received is zero");
+                    failures += 1;
+                }
+            }
+        }
+        None => {
+            log::error!("Failed to parse reference stats");
+            failures += 1;
+        }
+    }
+
+    rtc_testbench::log_traffic_stats(&stats.0);
+    rtc_testbench::log_traffic_stats(&stats.1);
+
+    let packet_counts = after - before;
+    log::info!("DUT packet counts: {packet_counts:?}");
+    let packet_counts = after_partner - before_partner;
+    log::info!("LP packet counts:  {packet_counts:?}");
+
+    Ok(failures)
+}
+
+pub fn profinet_rt_taprio(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let cycle_time_ns = 1_000_000;
+    let mut failures = 0;
+
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let context = traffic_context(config, shell, partner)?;
+
+    let mut shell_teardown = mac_setup(
+        shell,
+        &context.reference_interface,
+        cycle_time_ns,
+        QdiscUseCase::Taprio,
+    )?;
+    let mut partner_teardown = mac_setup(
+        partner,
+        &context.mirror_interface,
+        cycle_time_ns,
+        QdiscUseCase::Taprio,
+    )?;
+
+    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
     let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
     let before = ethtool::statistics(shell, &config.adapter)?;
     run_rtc_benchmark(shell, partner, 60)?;

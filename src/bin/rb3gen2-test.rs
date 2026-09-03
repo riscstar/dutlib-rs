@@ -205,6 +205,10 @@ pub struct TsnCli {
     /// Configure the link partner device (based on config)
     #[arg(short, long)]
     mirror: bool,
+
+    /// Adopt the specified qdisc use case (default: taprio)
+    #[arg(short, long, default_value = "taprio")]
+    qdisc: tsn_tests::QdiscUseCase,
 }
 
 fn tsn_scenario(config: Config, args: TsnCli) -> Result<(), Error> {
@@ -219,7 +223,7 @@ fn tsn_scenario(config: Config, args: TsnCli) -> Result<(), Error> {
         &config.adapter
     };
 
-    let mut undo = tsn_tests::stmmac_setup(&mut shell, interface, 1000000)?;
+    let mut undo = tsn_tests::mac_setup(&mut shell, interface, 1000000, args.qdisc)?;
     println!("\nScenario is configured. Press RETURN to return to defaults.");
     std::io::stdin().read_line(&mut String::new())?;
     undo.restore(&mut shell)?;
