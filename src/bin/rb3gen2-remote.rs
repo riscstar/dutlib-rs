@@ -21,11 +21,11 @@ struct Cli {
     command: Commands,
 
     /// Reduce the verbosity
-    #[arg(short, long, action = clap::ArgAction::Count)]
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     quiet: u8,
 
     /// Increase verbosity
-    #[arg(short, long, action = clap::ArgAction::Count)]
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
 
     /// Name of the device (as it appears in `ip addr`)
