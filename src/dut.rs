@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{CommandExecutor, SessionExt};
+use crate::{CommandExecutor, CommandExecutorConnection, SessionExt};
 
 impl CommandExecutor for ReplSession<OsSession> {
     fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
@@ -50,6 +50,10 @@ impl CommandExecutor for ReplSession<OsSession> {
 
             s
         })
+    }
+
+    fn connection(&self) -> CommandExecutorConnection {
+        CommandExecutorConnection::Dut
     }
 
     fn try_read_to_string(&mut self) -> Option<String> {

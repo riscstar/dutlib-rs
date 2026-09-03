@@ -2,7 +2,7 @@ use std::{ffi::OsString, io, process::Command, time::Duration};
 
 use expectrl::{Eof, Error, Expect, Session};
 
-use crate::{CommandExecutor, SessionExt};
+use crate::{CommandExecutor, CommandExecutorConnection, SessionExt};
 
 pub struct NativeExecutor {
     pub timeout: Option<Duration>,
@@ -73,6 +73,10 @@ impl CommandExecutor for NativeExecutor {
         }
     }
 
+    fn connection(&self) -> CommandExecutorConnection {
+        CommandExecutorConnection::Native
+    }
+
     fn try_read_to_string(&mut self) -> Option<String> {
         self.available.take()
     }
@@ -112,6 +116,10 @@ impl CommandExecutor for SudoExecutor {
         } else {
             self.executor.cmd(format!("sudo {cmd}"))
         }
+    }
+
+    fn connection(&self) -> CommandExecutorConnection {
+        CommandExecutorConnection::Sudo
     }
 
     fn try_read_to_string(&mut self) -> Option<String> {

@@ -19,6 +19,27 @@ pub mod tracker;
 pub mod tsn_tests;
 pub mod tuning;
 
+/// The type of connection used by a [`CommandExecutor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandExecutorConnection {
+    /// Connection to the device under test.
+    Dut,
+    /// Connection to the local machine.
+    Native,
+    /// Connection to the local machine with elevated (sudo) privileges.
+    Sudo,
+}
+
+impl std::fmt::Display for CommandExecutorConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandExecutorConnection::Dut => write!(f, "dut"),
+            CommandExecutorConnection::Native => write!(f, "native"),
+            CommandExecutorConnection::Sudo => write!(f, "sudo"),
+        }
+    }
+}
+
 pub trait CommandExecutor {
     /// Convenience method to run a comment.
     ///
@@ -31,6 +52,9 @@ pub trait CommandExecutor {
     ///    \r\n with plain \n
     /// 3. Output if returned as a `String`
     fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error>;
+
+    /// Return the type of the session (e.g. "dut", "native", "sudo").
+    fn connection(&self) -> CommandExecutorConnection;
 
     /// Read all available data and convert to a string.
     fn try_read_to_string(&mut self) -> Option<String>;
