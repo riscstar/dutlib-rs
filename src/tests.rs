@@ -1276,6 +1276,23 @@ pub fn iperf3_udp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Re
     Ok(failures)
 }
 
+/// Estimate the minimum trials required to observe all `n` outcomes
+/// with at least `target_prob` confidence (e.g., 0.99 for 99%).
+///
+/// Uses the Poisson approximation formula: k ≈ [N * ln(N / (1 - p))]
+fn required_trials(n: u64, target_prob: f64) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+
+    let failure_prob = 1.0 - target_prob.clamp(0.0, 1.0);
+    if failure_prob == 0.0 {
+        return u64::MAX;
+    }
+
+    (n as f64 * (n as f64 / failure_prob).ln()).ceil() as u64
+}
+
 /// Check that all the transmit queues are working.
 ///
 /// Run relatively slow iperf3 UDP transmit tests in a loop until all transmit
@@ -1298,13 +1315,19 @@ pub fn iperf3_udp_tx_all_queues(
     let pattern = format!("{}:tx-", config.adapter);
     let then = proc::interrupts(shell)?.filter(&pattern);
     if then.len() == 0 {
-        log::warn!("No TX interrupts found");
+        log::warn!("iperf3_udp_tx_all_queues: No TX interrupts found");
         return Ok(0);
     }
 
+    let num_queues = then.len() as u64;
+    let retries = required_trials(num_queues, 0.99);
+    log::info!(
+        "iperf3_udp_tx_all_queues: {num_queues} queues means up to {retries} trials are needed"
+    );
+
     let mut failures = 0;
 
-    for i in 0..30 {
+    for i in 0..retries {
         let stats = iperf3_new_helper(
             config,
             shell,
@@ -1312,13 +1335,13 @@ pub fn iperf3_udp_tx_all_queues(
         )?;
 
         if stats.end.streams.len() != 1 {
-            log::error!("Unexpected reply from iperf3");
+            log::error!("iperf3_udp_tx_all_queues: Unexpected reply from iperf3");
             return Ok(1);
         }
 
         let tx = get_lost_percent(stats.end.streams[0].udp);
         if tx > 1.0 {
-            log::error!("iperf3_udp_tx: Packet loss too high: TX {tx:0.1}");
+            log::error!("iperf3_udp_tx_all_queues: Packet loss too high: TX {tx:0.1}");
             failures += 1;
         }
 
