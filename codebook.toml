@@ -16,6 +16,7 @@ words = [
     "mdev",
     "mqprio",
     "mtu",
+    "phc",
     "phy",
     "profinet",
     "qdisc",

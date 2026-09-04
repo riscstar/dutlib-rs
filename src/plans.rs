@@ -345,9 +345,13 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("tsn-test");
 
     plan.test_case("profinet_rt_nop", tsn_tests::profinet_rt_nop);
-    plan.test_case("profinet_rt_mqprio", tsn_tests::profinet_rt_mqprio);
     plan.test_case("profinet_rt_taprio", tsn_tests::profinet_rt_taprio);
     plan.test_case("profinet_cyclic_only", tsn_tests::profinet_cyclic_only);
+    plan.test_case("profinet_rt_mqprio_xdp", tsn_tests::profinet_rt_mqprio_xdp);
+    plan.test_case(
+        "profinet_rt_mqprio_noxdp",
+        tsn_tests::profinet_rt_mqprio_noxdp,
+    );
 
     plan
 }

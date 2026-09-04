@@ -22,6 +22,12 @@ pub enum XdpMode {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PtpRole {
+    Master,
+    Slave,
+}
+
 fn traffic_context(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -52,17 +58,22 @@ fn run_rtc_benchmark(
     shell: &mut impl CommandExecutor,
     partner: &mut SudoExecutor,
     duration_secs: u64,
+    competitive_egress: bool,
 ) -> Result<(), Error> {
     let startup_delay = 30;
     let mirror_duration = duration_secs + startup_delay + 5;
     let reference_duration = duration_secs + startup_delay;
     let timeout = reference_duration + 30;
 
-    log::info!("Running RTC-Testbench (this will take {timeout} seconds)");
+    log::info!("Running RTC-Testbench (this will take {mirror_duration} seconds)");
 
     // Make sure we don't read results from stale log files!
     shell.cmd("rm reference.log")?;
     partner.cmd("rm mirror.log")?;
+
+    if competitive_egress {
+        shell.cmd("iperf3 -c 192.168.10.2 -u -b 2G -i 0 -t 89 & sleep 1")?;
+    }
 
     let (reference_result, mirror_result) = thread::scope(|s| {
         let mirror = s.spawn(|| {
@@ -262,9 +273,9 @@ fn igc_setup(
 /// Tx Assignment with Qbv and full hardware offload: 20% RT, 80% non-RT.
 ///
 /// TX Q 0 - Everything else
-/// TX Q 1 - RTC
+/// TX Q 1 - DCP, LLDP, UDP High
 /// TX Q 2 - RTA
-/// TX Q 3 - DCP, LLDP, UDP High
+/// TX Q 3 - RTC
 fn stmmac_setup_egress_taprio(
     shell: &mut impl CommandExecutor,
     interface: &str,
@@ -280,12 +291,12 @@ fn stmmac_setup_egress_taprio(
         concat!(
             "tc qdisc replace dev {} handle 100 parent root taprio num_tc 4 ",
             //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-            "map  0  0  0  0  0  3  2  1  0  0  0  0  0  0  0  0 ",
+            "map  0  0  0  0  0  1  2  3  0  0  0  0  0  0  0  0 ",
             "queues 1@0 1@1 1@3 1@2 ",
             "base-time {} ",
-            "sched-entry S 0x02 {} ",
-            "sched-entry S 0x04 {} ",
             "sched-entry S 0x08 {} ",
+            "sched-entry S 0x04 {} ",
+            "sched-entry S 0x02 {} ",
             "sched-entry S 0x01 {} ",
             "flags 0x02"
         ),
@@ -322,7 +333,6 @@ fn stmmac_setup_egress_mqprio(
             "num_tc 4 ",
             //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
             "map  0  0  0  0  0  1  2  3  0  0  0  0  0  0  0  0 ",
-            //"map  3  3  3  3  3  2  1  0  3  3  3  3  3  3  3  3 ",
             "queues 1@0 1@1 1@2 1@3 ",
             "hw 1"
         ),
@@ -340,9 +350,9 @@ fn stmmac_setup_egress_mqprio(
 /// Queue assignment is the same as taprio assignment:
 ///
 ///  * RX Q 0 - Everything else
-///  * RX Q 1 - RTC
+///  * RX Q 1 - DCP, LLDP, UDP High
 ///  * RX Q 2 - RTA
-///  * RX Q 3 - DCP, LLDP, UDP High
+///  * RX Q 3 - RTC
 #[rustfmt::skip]
 fn stmmac_setup_ingress_4_queue(
     shell: &mut impl CommandExecutor,
@@ -350,7 +360,7 @@ fn stmmac_setup_ingress_4_queue(
     tracker: &mut UndoTracker,
 ) -> Result<(), Error> {
     // Rx Assignment is the same as Tx Assignment
-    let rx_queues = [3, 3, 3, 1, 2, 3, 3, 0, 3, 3];
+    let rx_queues = [1, 1, 1, 3, 2, 1, 1, 0, 1, 1];
 
     shell.cmd(format!("tc qdisc add dev {interface} ingress"))?;
     tracker.add(format!("tc qdisc del dev {interface} ingress"));
@@ -426,6 +436,103 @@ pub fn mac_setup(
     } else {
         stmmac_setup(shell, interface, cycle_time_ns, use_case)
     }
+}
+
+/// Setup PTP on the given interface
+///
+pub fn ptp_setup(
+    shell: &mut impl CommandExecutor,
+    interface: impl AsRef<str>,
+    role: PtpRole,
+) -> Result<UndoTracker, Error> {
+    let interface = interface.as_ref();
+    let connection = shell.connection();
+    log::info!("Setting up PTP for the {connection} connection");
+
+    let mut tracker = UndoTracker::new();
+
+    // Kill already running daemons (just in case) and clean up log files
+    shell.cmd("killall ptp4l")?;
+    shell.cmd("killall phc2sys")?;
+    shell.cmd("rm -f ptp4l.log phc2sys.log")?;
+
+    // Copy NTP time to PHC
+    if role == PtpRole::Master {
+        shell.cmd(format!("phc_ctl {interface} set"))?;
+    }
+
+    // Stop NTP service
+    shell.cmd("systemctl stop systemd-timesyncd")?;
+    tracker.add(format!("sleep 2"));
+    tracker.add(format!("systemctl start systemd-timesyncd"));
+
+    // Start PTP as a background process
+    let extra_flags = if role == PtpRole::Slave { "-s" } else { "" };
+    shell.cmd(format!("setsid -f -- ptp4l -2 -H -i {interface} --socket_priority=4 --tx_timestamp_timeout=40 --hwts_filter=full --step_threshold=1 --transportSpecific=1 -m {extra_flags} > ptp4l.log"))?;
+    tracker.add(format!("killall ptp4l"));
+
+    thread::sleep(Duration::from_secs(10));
+
+    // Whether we are master or slave we will treat the NIC clock as the source
+    // of truth and align the system clock to it.
+    shell.cmd(
+        "setsid -f -- phc2sys -a -rr --step_threshold=1 --transportSpecific=1 -m > phc2sys.log",
+    )?;
+    tracker.add(format!("killall phc2sys"));
+
+    Ok(tracker)
+}
+
+/// Setup both the DUT and the link partner for TSN testing.
+///
+/// This involves setting up packet ingress, packet egress and PTP.
+pub fn tsn_setup(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+    partner: &mut impl CommandExecutor,
+    cycle_time_ns: u64,
+    use_case: QdiscUseCase,
+) -> Result<(TrafficContext, UndoTracker, UndoTracker), Error> {
+    let context = traffic_context(config, shell, partner)?;
+
+    let mut partner_teardown = UndoTracker::new();
+    partner_teardown.append(mac_setup(
+        partner,
+        &context.mirror_interface,
+        cycle_time_ns,
+        use_case,
+    )?);
+    partner_teardown.append(ptp_setup(
+        partner,
+        &context.mirror_interface,
+        PtpRole::Master,
+    )?);
+
+    let mut shell_teardown = UndoTracker::new();
+    shell_teardown.append(mac_setup(
+        shell,
+        &context.reference_interface,
+        cycle_time_ns,
+        use_case,
+    )?);
+    shell_teardown.append(ptp_setup(
+        shell,
+        &context.reference_interface,
+        PtpRole::Slave,
+    )?);
+
+    log::info!("Waiting for PTP to settle");
+    thread::sleep(Duration::from_secs(90));
+
+    // Let's check that everything is working
+    //
+    // TODO: This is currently this is just an quick eyeball test
+    log::info!("{}", shell.cmd("tail -n1 ptp4l.log")?.trim());
+    log::info!("{}", shell.cmd("tail -n1 phc2sys.log")?.trim());
+    log::info!("{}", partner.cmd("tail -n1 ptp4l.log")?.trim());
+    log::info!("{}", partner.cmd("tail -n1 phc2sys.log")?.trim());
+
+    Ok((context, shell_teardown, partner_teardown))
 }
 
 fn config_cyclic_only(
@@ -510,25 +617,13 @@ pub fn profinet_cyclic_only(
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let context = traffic_context(config, shell, partner)?;
-
-    let mut shell_teardown = mac_setup(
-        shell,
-        &context.reference_interface,
-        cycle_time_ns,
-        QdiscUseCase::Taprio,
-    )?;
-    let mut partner_teardown = mac_setup(
-        partner,
-        &context.mirror_interface,
-        cycle_time_ns,
-        QdiscUseCase::Taprio,
-    )?;
+    let (context, mut shell_teardown, mut partner_teardown) =
+        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Taprio)?;
 
     config_cyclic_only(&context, shell, partner, cycle_time_ns)?;
 
     let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60)?;
+    run_rtc_benchmark(shell, partner, 60, false)?;
     let after = ethtool::statistics(shell, &config.adapter)?;
 
     let reference = shell.cmd("tail -1 reference.log")?;
@@ -575,10 +670,9 @@ fn config_profinet_rt(
     let mut rtc = TrafficClass::rtc()
         .set_vid(100)
         .set_frame_count_and_length(32, 128)
-        .set_txrx_queue(1)
+        .set_txrx_queue(3)
         .set_socket_priority(7)
-        .set_thread_cpu_and_priority(1, 98)
-        .set_tx_timestamp();
+        .set_thread_cpu_and_priority(3, 98);
     if xdp_mode == XdpMode::Enabled {
         rtc = rtc.set_xdp(false, true, true);
     }
@@ -598,31 +692,30 @@ fn config_profinet_rt(
         .set_vid(100)
         .set_burst_period_ns("2s")
         .set_frame_count_and_length(1, 200)
-        .set_txrx_queue(3)
+        .set_txrx_queue(1)
         .set_socket_priority(5)
-        .set_thread_cpu_and_priority(3, 53)
+        .set_thread_cpu_and_priority(1, 53)
         .set_destination("01:0e:cf:00:00:00");
 
     let lldp = TrafficClass::lldp()
         .set_burst_period_ns("5s")
         .set_frame_count_and_length(1, 200)
-        .set_txrx_queue(3)
+        .set_txrx_queue(1)
         .set_socket_priority(5)
-        .set_thread_cpu_and_priority(4, 52)
+        .set_thread_cpu_and_priority(1, 52)
         .set_destination("01:80:c2:00:00:0e");
 
     let udp_high = TrafficClass::udp_high()
         .set_burst_period_ns("1s")
         .set_frame_count_and_length(1, 1400)
-        .set_txrx_queue(3)
+        .set_txrx_queue(1)
         .set_socket_priority(5)
-        .set_thread_cpu_and_priority(5, 51)
+        .set_thread_cpu_and_priority(1, 51)
         .set_port(6666);
 
-    // This uses about 20% of the link bandwidth
     let udp_low = TrafficClass::udp_low()
         .set_burst_period_ns("1s")
-        .set_frame_count_and_length(40000, 1400)
+        .set_frame_count_and_length(1, 1400)
         .set_txrx_queue(0)
         .set_socket_priority(4)
         .set_thread_cpu_and_priority(0, 51)
@@ -692,7 +785,7 @@ pub fn profinet_rt_nop(config: &Config, shell: &mut impl CommandExecutor) -> Res
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
     let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
     let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60)?;
+    run_rtc_benchmark(shell, partner, 60, true)?;
     let after = ethtool::statistics(shell, &config.adapter)?;
     let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
@@ -729,32 +822,79 @@ pub fn profinet_rt_nop(config: &Config, shell: &mut impl CommandExecutor) -> Res
     Ok(failures)
 }
 
-pub fn profinet_rt_mqprio(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn profinet_rt_mqprio_xdp(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
     let cycle_time_ns = 1_000_000;
     let mut failures = 0;
 
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let context = traffic_context(config, shell, partner)?;
+    let (context, mut shell_teardown, mut partner_teardown) =
+        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Mqprio)?;
 
-    let mut shell_teardown = mac_setup(
-        shell,
-        &context.reference_interface,
-        cycle_time_ns,
-        QdiscUseCase::Mqprio,
-    )?;
-    let mut partner_teardown = mac_setup(
-        partner,
-        &context.mirror_interface,
-        cycle_time_ns,
-        QdiscUseCase::Mqprio,
-    )?;
+    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
+    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
+    let before = ethtool::statistics(shell, &config.adapter)?;
+    run_rtc_benchmark(shell, partner, 60, true)?;
+    let after = ethtool::statistics(shell, &config.adapter)?;
+    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
+
+    let reference = shell.cmd("tail -1 reference.log")?;
+    let mirror = partner.cmd("tail -1 mirror.log")?;
+    let stats = (
+        rtc_testbench::parse_log_line(reference),
+        rtc_testbench::parse_log_line(mirror),
+    );
+
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    match &stats.0 {
+        Some(stats) => {
+            for tag in ["Rtc", "Rta", "Dcp", "Lldp", "UdpHigh", "UdpLow"] {
+                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
+                    log::error!("{tag}Received is zero");
+                    failures += 1;
+                }
+            }
+        }
+        None => {
+            log::error!("Failed to parse reference stats");
+            failures += 1;
+        }
+    }
+
+    rtc_testbench::log_traffic_stats(&stats.0);
+    rtc_testbench::log_traffic_stats(&stats.1);
+
+    let packet_counts = after - before;
+    log::info!("DUT packet counts: {packet_counts:?}");
+    let packet_counts = after_partner - before_partner;
+    log::info!("LP packet counts:  {packet_counts:?}");
+
+    Ok(failures)
+}
+
+pub fn profinet_rt_mqprio_noxdp(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let cycle_time_ns = 1_000_000;
+    let mut failures = 0;
+
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let (context, mut shell_teardown, mut partner_teardown) =
+        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Mqprio)?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
     let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
     let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60)?;
+    run_rtc_benchmark(shell, partner, 60, true)?;
     let after = ethtool::statistics(shell, &config.adapter)?;
     let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
@@ -801,25 +941,13 @@ pub fn profinet_rt_taprio(config: &Config, shell: &mut impl CommandExecutor) -> 
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let context = traffic_context(config, shell, partner)?;
-
-    let mut shell_teardown = mac_setup(
-        shell,
-        &context.reference_interface,
-        cycle_time_ns,
-        QdiscUseCase::Taprio,
-    )?;
-    let mut partner_teardown = mac_setup(
-        partner,
-        &context.mirror_interface,
-        cycle_time_ns,
-        QdiscUseCase::Taprio,
-    )?;
+    let (context, mut shell_teardown, mut partner_teardown) =
+        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Taprio)?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
     let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
     let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60)?;
+    run_rtc_benchmark(shell, partner, 60, false)?;
     let after = ethtool::statistics(shell, &config.adapter)?;
     let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 

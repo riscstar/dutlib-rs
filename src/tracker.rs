@@ -19,6 +19,10 @@ impl UndoTracker {
         self.commands.push(action);
     }
 
+    pub fn append(&mut self, mut other: UndoTracker) {
+        self.commands.append(&mut other.commands);
+    }
+
     pub fn sysfs(
         &mut self,
         shell: &mut impl CommandExecutor,

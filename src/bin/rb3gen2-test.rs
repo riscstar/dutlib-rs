@@ -10,7 +10,8 @@ use dutlib::{
     CommandExecutor, Config,
     native::NativeExecutor,
     plans::{self, Selection, TestPlan},
-    read_config, tests, tsn_tests,
+    read_config, tests,
+    tsn_tests::{self, PtpRole},
 };
 
 #[derive(Debug, Parser)]
@@ -68,7 +69,7 @@ enum Commands {
     AllTests(RunTestCli),
 
     // Configure interactive TSN scenarios
-    Tsn(TsnCli),
+    SetupTsn(TsnCli),
 }
 
 #[derive(Debug, Parser)]
@@ -201,7 +202,7 @@ pub struct TsnCli {
     qdisc: tsn_tests::QdiscUseCase,
 }
 
-fn tsn_scenario(config: Config, args: TsnCli) -> Result<(), Error> {
+fn setup_tsn(config: Config, args: TsnCli) -> Result<(), Error> {
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&config.module)?;
@@ -212,10 +213,18 @@ fn tsn_scenario(config: Config, args: TsnCli) -> Result<(), Error> {
     } else {
         &config.adapter
     };
+    let role = if args.mirror {
+        PtpRole::Master
+    } else {
+        PtpRole::Slave
+    };
 
     let mut undo = tsn_tests::mac_setup(&mut shell, interface, 1000000, args.qdisc)?;
+    undo.append(tsn_tests::ptp_setup(&mut shell, interface, role)?);
+
     println!("\nScenario is configured. Press RETURN to return to defaults.");
     std::io::stdin().read_line(&mut String::new())?;
+
     undo.restore(&mut shell)?;
 
     Ok(())
@@ -273,7 +282,7 @@ fn app() -> Result<(), Error> {
         Commands::PhyQuickTest(args) => run_test(config, args, plans::phy_quick_test()),
         Commands::SystemTest(args) => run_test(config, args, plans::system_test()),
         Commands::AllTests(args) => run_test(config, args, all_test_plans()),
-        Commands::Tsn(args) => tsn_scenario(config, args),
+        Commands::SetupTsn(args) => setup_tsn(config, args),
     };
 
     if let Some(settings) = printk {
