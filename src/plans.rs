@@ -4,6 +4,35 @@ use crate::{CommandExecutor, Config, tests, tsn_tests, tuning};
 
 type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, Error>;
 
+/// The common `--select` command line arguments shared by the test
+/// executables.
+///
+/// More than one selection may be given (either as repeated arguments or as
+/// several values after a single `--select`); a test is retained if its name
+/// contains any of the selections.
+#[derive(Clone, Debug, clap::Args)]
+pub struct Selection {
+    /// Skip all tests that do not match one of the selections
+    #[arg(short, long, num_args = 1..)]
+    select: Vec<String>,
+}
+
+impl Selection {
+    /// Does the named test match one of the selections?
+    pub fn matches(&self, name: &str) -> bool {
+        self.select.iter().any(|s| name.contains(s.as_str()))
+    }
+
+    /// Filter `plan` using the selections (a no-op if nothing was selected).
+    pub fn filter_plan<T: CommandExecutor>(&self, plan: TestPlan<T>) -> TestPlan<T> {
+        if self.select.is_empty() {
+            plan
+        } else {
+            plan.filter(|f| self.matches(f))
+        }
+    }
+}
+
 #[derive(Debug)]
 struct TestCase<T: CommandExecutor> {
     name: &'static str,

@@ -9,7 +9,7 @@ use expectrl::{Error, repl::ReplSession, session::OsSession};
 use dutlib::{
     CommandExecutor, Config,
     dut::DeviceUnderTest,
-    plans::{self, TestPlan},
+    plans::{self, Selection, TestPlan},
     read_config, tests,
 };
 
@@ -117,9 +117,8 @@ pub struct BootCycleCli {
     #[arg(short, long, default_value = "smoke-test")]
     plan: String,
 
-    /// Skip all tests that do not match the selection
-    #[arg(short, long)]
-    select: Option<String>,
+    #[command(flatten)]
+    select: Selection,
 }
 
 fn all_test_plans() -> TestPlan<ReplSession<OsSession>> {
@@ -151,11 +150,7 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
     };
 
     // Filter if needed
-    let plan = if let Some(select) = &args.select {
-        plan.filter(|f| f.contains(select.as_str()))
-    } else {
-        plan
-    };
+    let plan = args.select.filter_plan(plan);
 
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
 
@@ -205,9 +200,8 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
 
 #[derive(Debug, Parser)]
 pub struct RunTestCli {
-    /// Skip all tests that do not match the selection
-    #[arg(short, long)]
-    select: Option<String>,
+    #[command(flatten)]
+    select: Selection,
 
     /// Reboot before running any tests
     #[arg(short, long)]
@@ -229,11 +223,7 @@ fn run_test(
     tests::wait_for_ipv4(&config, &mut console)?;
 
     // Filter if needed
-    let test_plan = if let Some(select) = &args.select {
-        test_plan.filter(|f| f.contains(select.as_str()))
-    } else {
-        test_plan
-    };
+    let test_plan = args.select.filter_plan(test_plan);
 
     match test_plan.run(&config, &mut console) {
         Ok(0) => Ok(()),
