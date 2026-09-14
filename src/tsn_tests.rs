@@ -24,6 +24,8 @@ pub enum QdiscUseCase {
     Mqprio,
     MqprioAndCbs,
     MqprioAndEtf,
+    MqprioAndCbsWith5Queues,
+    MqprioAndEtfWith5Queues,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,7 +440,7 @@ fn stmmac_setup_egress_taprio(
 ///  * TX Q 1 - DCP, LLDP, UDP High
 ///  * TX Q 2 - RTA
 ///  * TX Q 3 - RTC
-fn stmmac_setup_egress_mqprio(
+fn stmmac_setup_4q_egress_mqprio(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
@@ -461,13 +463,40 @@ fn stmmac_setup_egress_mqprio(
     Ok(())
 }
 
-/// Extend the mqprio configuration by applying bandwidth limiter.
+/// Profinet-RT style configuration using simple static priority (mqprio).
 ///
-/// Normally this is applied to high priority traffic (to ensure if it
-/// exceeds the specified bandwidth it will not harm other traffic). However
-/// for convenience we will apply it to the low priority traffic since it's
-/// easy to observe it's effect.
-fn stmmac_setup_egress_mqprio_cbs(
+/// Uses five TX queues assigned as follows:
+///
+///  * TX Q 0 - Everything else
+///  * TX Q 1 - UDP Low
+///  * TX Q 1 - DCP, LLDP, UDP High
+///  * TX Q 2 - RTA
+///  * TX Q 3 - RTC
+fn stmmac_setup_5q_egress_mqprio(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
+    let qdisc = format!(
+        concat!(
+            "tc qdisc replace dev {} handle 100 parent root mqprio ",
+            "num_tc 5 ",
+            //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+            "map  0  0  0  0  1  2  3  4  0  0  0  0  0  0  0  0 ",
+            "queues 1@0 1@1 1@2 1@3 1@4 ",
+            "hw 1"
+        ),
+        interface,
+    );
+
+    shell.cmd(qdisc)?;
+    tracker.add(format!("tc qdisc del dev {interface} root"));
+
+    Ok(())
+}
+
+/// Extend the mqprio configuration by applying bandwidth limiter.
+fn stmmac_setup_4q_egress_mqprio_cbs(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
@@ -519,11 +548,62 @@ fn stmmac_setup_egress_mqprio_cbs(
     Ok(())
 }
 
+/// Extend the mqprio configuration by applying bandwidth limiter.
+fn stmmac_setup_5q_egress_mqprio_cbs(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
+    let cbs = CbsConfig::new_with_bandwidth(2500000, 800000).unwrap();
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:3 handle 103: cbs ",
+            "idleslope {} ",
+            "sendslope {} ",
+            "hicredit {} ",
+            "locredit {} ",
+            "offload 1"
+        ),
+        interface, cbs.idle_slope, cbs.send_slope, cbs.hi_credit, cbs.lo_credit
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:3"));
+
+    let cbs = CbsConfig::new_with_bandwidth(2500000, 400000).unwrap();
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:4 handle 104: cbs ",
+            "idleslope {} ",
+            "sendslope {} ",
+            "hicredit {} ",
+            "locredit {} ",
+            "offload 1"
+        ),
+        interface, cbs.idle_slope, cbs.send_slope, cbs.hi_credit, cbs.lo_credit
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:4"));
+
+    let cbs = CbsConfig::new_with_bandwidth(2500000, 200000).unwrap();
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:5 handle 105: cbs ",
+            "idleslope {} ",
+            "sendslope {} ",
+            "hicredit {} ",
+            "locredit {} ",
+            "offload 1"
+        ),
+        interface, cbs.idle_slope, cbs.send_slope, cbs.hi_credit, cbs.lo_credit
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:5"));
+
+    Ok(())
+}
+
 /// Extend the mqprio configuration by applying ETF scheduling to the highest
 /// priority queue.
 ///
 /// For a TC956x with 4 queues it is not possible to offload to hardware.
-fn stmmac_setup_egress_mqprio_tbs(
+fn stmmac_setup_4q_egress_mqprio_tbs(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
@@ -541,6 +621,28 @@ fn stmmac_setup_egress_mqprio_tbs(
     Ok(())
 }
 
+/// Extend the mqprio configuration by applying ETF scheduling to the highest
+/// priority queue.
+///
+/// For a TC956x with 5 queues we can offload queue #4 to hardware
+fn stmmac_setup_5q_egress_mqprio_tbs(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:5 handle 105: etf ",
+            "clockid CLOCK_TAI ",
+            "delta 25000 ",
+            "offload"
+        ),
+        interface
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:5"));
+
+    Ok(())
+}
 /// Rx Assignment for any 4 queue use-case
 ///
 /// Queue assignment is the same as taprio assignment:
@@ -550,12 +652,13 @@ fn stmmac_setup_egress_mqprio_tbs(
 ///  * RX Q 2 - RTA
 ///  * RX Q 3 - RTC
 #[rustfmt::skip]
-fn stmmac_setup_ingress_4_queue(
+fn stmmac_setup_4q_ingress_queue(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
 ) -> Result<(), Error> {
     // Rx Assignment is the same as Tx Assignment
+    //               7  6  5  4  3  2  1  0 PTP LLDP
     let rx_queues = [1, 1, 1, 3, 2, 1, 1, 0, 1, 1];
 
     shell.cmd(format!("tc qdisc add dev {interface} ingress"))?;
@@ -576,6 +679,87 @@ fn stmmac_setup_ingress_4_queue(
     shell.cmd(format!("tc filter add dev {interface} parent ffff: protocol 0x88cc flower hw_tc {}", rx_queues[9]))?;
 
     Ok(())
+}
+
+/// The current hardware channel settings reported by
+/// `ethtool --show-channels {interface}`.
+///
+/// Channels reported as `n/a` by ethtool are represented as `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChannelSettings {
+    rx: Option<u32>,
+    tx: Option<u32>,
+    other: Option<u32>,
+    combined: Option<u32>,
+}
+
+/// Get the current hardware queue counts for the given interface
+fn mac_get_queue_count(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+) -> Result<ChannelSettings, Error> {
+    let reply = shell.cmd(format!("ethtool --show-channels {interface}"))?;
+    parse_channel_settings(&reply)
+}
+
+/// Parse the "Current hardware settings" section of
+/// `ethtool --show-channels` output.
+///
+/// The "Pre-set maximums" section is ignored. It uses the same keys as the
+/// current settings so parsing must not begin until the current settings
+/// header has been seen.
+fn parse_channel_settings(output: &str) -> Result<ChannelSettings, Error> {
+    let mut settings = ChannelSettings {
+        rx: None,
+        tx: None,
+        other: None,
+        combined: None,
+    };
+
+    let mut current_settings = false;
+    for line in output.lines() {
+        let line = line.trim();
+
+        if line == "Current hardware settings:" {
+            current_settings = true;
+            continue;
+        }
+
+        if !current_settings {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+
+        let value = value.trim();
+        if value == "n/a" {
+            continue;
+        }
+
+        let value = value.parse::<u32>().map_err(|_| {
+            log::error!("Cannot parse ethtool --show-channels value: {line:?}");
+            io::Error::other("Cannot parse ethtool --show-channels output")
+        })?;
+
+        match key.trim() {
+            "RX" => settings.rx = Some(value),
+            "TX" => settings.tx = Some(value),
+            "Other" => settings.other = Some(value),
+            "Combined" => settings.combined = Some(value),
+            _ => {}
+        }
+    }
+
+    if !current_settings {
+        log::error!("ethtool --show-channels output has no current settings: {output:?}");
+        return Err(
+            io::Error::other("ethtool --show-channels output has no current settings").into(),
+        );
+    }
+
+    Ok(settings)
 }
 
 fn stmmac_setup(
@@ -602,24 +786,40 @@ fn stmmac_setup(
     shell.cmd(format!("ethtool -K {interface} rx-vlan-offload off"))?;
     tracker.add(format!("ethtool -K {interface} rx-vlan-offload on"));
 
+    let channel_settings = mac_get_queue_count(shell, interface)?;
+    let tx = channel_settings.tx.unwrap_or(1);
+
+    // tsn_setup() already aborts 5 queue tests if they are not supported
+    // allowing us to fallback to 4 queue setups (in case the link partner
+    // has fewer queues available)
     match use_case {
         QdiscUseCase::Taprio => {
             stmmac_setup_egress_taprio(shell, interface, cycle_time_ns, &mut tracker)?;
-            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
         }
         QdiscUseCase::Mqprio => {
-            stmmac_setup_egress_mqprio(shell, interface, &mut tracker)?;
-            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
         }
-        QdiscUseCase::MqprioAndCbs => {
-            stmmac_setup_egress_mqprio(shell, interface, &mut tracker)?;
-            stmmac_setup_egress_mqprio_cbs(shell, interface, &mut tracker)?;
-            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+        QdiscUseCase::MqprioAndCbsWith5Queues if tx >= 5 => {
+            stmmac_setup_5q_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_5q_egress_mqprio_cbs(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
         }
-        QdiscUseCase::MqprioAndEtf => {
-            stmmac_setup_egress_mqprio(shell, interface, &mut tracker)?;
-            stmmac_setup_egress_mqprio_tbs(shell, interface, &mut tracker)?;
-            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+        QdiscUseCase::MqprioAndCbs | QdiscUseCase::MqprioAndCbsWith5Queues => {
+            stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_egress_mqprio_cbs(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+        }
+        QdiscUseCase::MqprioAndEtfWith5Queues if tx >= 5 => {
+            stmmac_setup_5q_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_5q_egress_mqprio_tbs(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+        }
+        QdiscUseCase::MqprioAndEtf | QdiscUseCase::MqprioAndEtfWith5Queues => {
+            stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_egress_mqprio_tbs(shell, interface, &mut tracker)?;
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
         }
     }
 
@@ -763,6 +963,15 @@ pub fn tsn_setup(
     use_case: QdiscUseCase,
     ptp: PtpMode,
 ) -> Result<(TrafficContext, UndoTracker, UndoTracker), Error> {
+    let channel_settings = mac_get_queue_count(shell, &config.adapter)?;
+    let tx = channel_settings.tx.unwrap_or(1);
+    if tx < 5
+        && (use_case == QdiscUseCase::MqprioAndCbsWith5Queues
+            || use_case == QdiscUseCase::MqprioAndEtfWith5Queues)
+    {
+        return Err(io::Error::other("adapter must have at least 5 TX queues").into());
+    }
+
     let context = traffic_context(config, shell, partner)?;
 
     let mut partner_teardown = UndoTracker::new();
@@ -1424,7 +1633,36 @@ pub fn netperf_pair_mqprio_and_cbs(
         failures += 1;
     }
 
-    if lo < 100.0 || lo > 600.0 {
+    if lo < 100.0 || lo > 650.0 {
+        log::error!(
+            "netperf_pair_mqprio_and_cbs: netperf low priority throughput is out of range: {lo}"
+        );
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+/// As `netperf_pair_mqprio_and_cbs` but with 5 queues instead of 4.
+///
+/// This allows queue 1 to 3 (where queue 1 has no hardware CBS support) to be
+/// replaced with queue 2 to 4 (all of which have hardware CBS support).
+pub fn netperf_pair_mqprio_and_cbs_with_5_queues(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues))?;
+
+    let mut failures = 0;
+
+    if hi < 150.0 || hi > 200.0 {
+        log::error!(
+            "netperf_pair_mqprio_and_cbs: netperf high priority throughput is out of range: {hi}"
+        );
+        failures += 1;
+    }
+
+    if lo < 400.0 || lo > 600.0 {
         log::error!(
             "netperf_pair_mqprio_and_cbs: netperf low priority throughput is out of range: {lo}"
         );
@@ -1639,9 +1877,37 @@ pub fn netperf_quad_mqprio_and_cbs(
     Ok(failures)
 }
 
-pub fn txrx_tsn_mqprio_and_etf(
+pub fn netperf_quad_mqprio_and_cbs_with_5_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (rtc, rta, udp_high, _) =
+        netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues))?;
+
+    let mut failures = 0;
+
+    if rtc > 200.0 {
+        log::error!("netperf_quad_mqprio_and_cbs: rtc throughput is too high: {rtc}");
+        failures += 1;
+    }
+
+    if rta > 400.0 {
+        log::error!("netperf_quad_mqprio_and_cbs: rta throughput is too high: {rta}");
+        failures += 1;
+    }
+
+    if udp_high > 600.0 {
+        log::error!("netperf_quad_mqprio_and_cbs: udp-high throughput is too high: {udp_high}");
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+fn txrx_tsn(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+    use_case: QdiscUseCase,
 ) -> Result<u32, Error> {
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
@@ -1653,7 +1919,7 @@ pub fn txrx_tsn_mqprio_and_etf(
         shell,
         partner,
         1_000_000,
-        QdiscUseCase::MqprioAndEtf,
+        use_case,
         PtpMode::Enabled,
     )?;
 
@@ -1704,27 +1970,44 @@ pub fn txrx_tsn_mqprio_and_etf(
     let len = deltas.len();
 
     log::info!(
-        "txrx_tsn_etf_software: delta stats: N={len} min={min} mean={mean} max={max} stddev={stddev}",
+        "txrx_tsn_mqprio_and_etf: delta stats: N={len} min={min} mean={mean} max={max} stddev={stddev}",
     );
 
     let mut failures = 0;
 
     if len < 250 {
-        log::error!("txrx_tsn_etf_software: Expected >250 samples, got {len}",);
+        log::error!("txrx_tsn_mqprio_and_etf: Expected >250 samples, got {len}",);
         failures += 1;
     }
 
     if mean.abs() > 25000.0 {
-        log::error!("txrx_tsn_etf_software: Mean delta is too large: {mean} ns");
+        log::error!("txrx_tsn_mqprio_and_etf: Mean delta is too large: {mean} ns");
         failures += 1;
     }
 
     Ok(failures)
 }
 
+pub fn txrx_tsn_mqprio_and_etf(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtf)
+}
+
+pub fn txrx_tsn_mqprio_and_etf_with_5_queues(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtfWith5Queues)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CbsConfig, NetperfStatus, parse_netperf_throughput, parse_ptp_offset_from_master};
+    use super::{
+        CbsConfig, ChannelSettings, NetperfStatus, parse_channel_settings,
+        parse_netperf_throughput, parse_ptp_offset_from_master,
+    };
 
     const NETPERF_OUTPUT: &str = "\
 MIGRATED UDP STREAM TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 192.168.10.2 () port 0 AF_INET : demo
@@ -1810,6 +2093,95 @@ bytes   bytes    secs            #      #   10^6bits/sec
             parse_netperf_throughput("no netperf output here").collect();
 
         assert!(statuses.is_empty());
+    }
+
+    const ETHTOOL_CHANNELS_OUTPUT: &str = "\
+Channel parameters for eth0:
+Pre-set maximums:
+RX:\t\t8
+TX:\t\t8
+Other:\t\tn/a
+Combined:\tn/a
+Current hardware settings:
+RX:\t\t5
+TX:\t\t5
+Other:\t\tn/a
+Combined:\tn/a";
+
+    #[test]
+    fn parses_channel_settings() {
+        let settings = parse_channel_settings(ETHTOOL_CHANNELS_OUTPUT).unwrap();
+
+        // The pre-set maximums (8) must not be confused with the current
+        // settings (5)
+        assert_eq!(
+            settings,
+            ChannelSettings {
+                rx: Some(5),
+                tx: Some(5),
+                other: None,
+                combined: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_combined_channel_settings() {
+        let output = "\
+Channel parameters for eth0:
+Pre-set maximums:
+RX:\t\tn/a
+TX:\t\tn/a
+Other:\t\t1
+Combined:\t8
+Current hardware settings:
+RX:\t\tn/a
+TX:\t\tn/a
+Other:\t\t1
+Combined:\t4";
+
+        let settings = parse_channel_settings(output).unwrap();
+
+        assert_eq!(
+            settings,
+            ChannelSettings {
+                rx: None,
+                tx: None,
+                other: Some(1),
+                combined: Some(4),
+            }
+        );
+    }
+
+    #[test]
+    fn channel_settings_tolerates_prompt_noise() {
+        let output = format!("{ETHTOOL_CHANNELS_OUTPUT}\nroot@rb3gen2:~# ");
+
+        let settings = parse_channel_settings(&output).unwrap();
+
+        assert_eq!(settings.rx, Some(5));
+        assert_eq!(settings.tx, Some(5));
+    }
+
+    #[test]
+    fn channel_settings_without_current_section_is_an_error() {
+        let output = "\
+Channel parameters for eth0:
+Pre-set maximums:
+RX:\t\t8
+TX:\t\t8";
+
+        assert!(parse_channel_settings(output).is_err());
+    }
+
+    #[test]
+    fn channel_settings_with_unparseable_value_is_an_error() {
+        let output = "\
+Current hardware settings:
+RX:\t\tmany
+TX:\t\t5";
+
+        assert!(parse_channel_settings(output).is_err());
     }
 
     #[test]

@@ -351,6 +351,10 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
         "netperf_pair_mqprio_and_cbs",
         tsn_tests::netperf_pair_mqprio_and_cbs,
     );
+    plan.test_case(
+        "netperf_pair_mqprio_and_cbs_with_5_queues",
+        tsn_tests::netperf_pair_mqprio_and_cbs_with_5_queues,
+    );
 
     plan.test_case("netperf_quad_nop", tsn_tests::netperf_quad_nop);
     plan.test_case("netperf_quad_taprio", tsn_tests::netperf_quad_taprio);
@@ -358,6 +362,10 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     plan.test_case(
         "netperf_quad_mqprio_and_cbs",
         tsn_tests::netperf_quad_mqprio_and_cbs,
+    );
+    plan.test_case(
+        "netperf_quad_mqprio_and_cbs_with_5_queues",
+        tsn_tests::netperf_quad_mqprio_and_cbs_with_5_queues,
     );
 
     plan.test_case("profinet_rt_nop", tsn_tests::profinet_rt_nop);
@@ -376,6 +384,10 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     plan.test_case(
         "txrx_tsn_mqprio_and_etf",
         tsn_tests::txrx_tsn_mqprio_and_etf,
+    );
+    plan.test_case(
+        "txrx_tsn_mqprio_and_etf_with_5_queues",
+        tsn_tests::txrx_tsn_mqprio_and_etf_with_5_queues,
     );
 
     plan
