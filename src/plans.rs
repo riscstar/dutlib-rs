@@ -344,6 +344,22 @@ pub fn partner_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("tsn-test");
 
+    plan.test_case("netperf_pair_nop", tsn_tests::netperf_pair_nop);
+    plan.test_case("netperf_pair_taprio", tsn_tests::netperf_pair_taprio);
+    plan.test_case("netperf_pair_mqprio", tsn_tests::netperf_pair_mqprio);
+    plan.test_case(
+        "netperf_pair_mqprio_and_cbs",
+        tsn_tests::netperf_pair_mqprio_and_cbs,
+    );
+
+    plan.test_case("netperf_quad_nop", tsn_tests::netperf_quad_nop);
+    plan.test_case("netperf_quad_taprio", tsn_tests::netperf_quad_taprio);
+    plan.test_case("netperf_quad_mqprio", tsn_tests::netperf_quad_mqprio);
+    plan.test_case(
+        "netperf_quad_mqprio_and_cbs",
+        tsn_tests::netperf_quad_mqprio_and_cbs,
+    );
+
     plan.test_case("profinet_rt_nop", tsn_tests::profinet_rt_nop);
     plan.test_case("profinet_rt_taprio", tsn_tests::profinet_rt_taprio);
     plan.test_case("profinet_cyclic_only", tsn_tests::profinet_cyclic_only);
@@ -351,6 +367,15 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     plan.test_case(
         "profinet_rt_mqprio_noxdp",
         tsn_tests::profinet_rt_mqprio_noxdp,
+    );
+    plan.test_case(
+        "profinet_rt_mqprio_and_cbs",
+        tsn_tests::profinet_rt_mqprio_and_cbs,
+    );
+
+    plan.test_case(
+        "txrx_tsn_mqprio_and_etf",
+        tsn_tests::txrx_tsn_mqprio_and_etf,
     );
 
     plan

@@ -1,11 +1,19 @@
-use std::{io, thread, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{self, Write},
+    thread::{self},
+    time::{Duration, Instant},
+};
 
 use expectrl::Error;
+use statrs::statistics::Statistics as StatrsStatistics;
 
 use crate::{
-    CommandExecutor, Config, ethtool, ip,
+    CommandExecutor, Config,
+    ethtool::{self, Statistics},
+    ip,
     native::SudoExecutor,
-    rtc_testbench::{self, TrafficClass, TrafficContext},
+    rtc_testbench::{self, TrafficClass, TrafficContext, TrafficStats},
     tests::DriverInfo,
     tracker::UndoTracker,
 };
@@ -14,8 +22,15 @@ use crate::{
 pub enum QdiscUseCase {
     Taprio,
     Mqprio,
+    MqprioAndCbs,
+    MqprioAndEtf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtpMode {
+    Enabled,
+    Disabled,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XdpMode {
     Enabled,
@@ -26,6 +41,72 @@ pub enum XdpMode {
 pub enum PtpRole {
     Master,
     Slave,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CbsConfig {
+    pub idle_slope: i64, // Bandwidth allocation in kbit/s
+    pub send_slope: i64, // Credit depletion rate in kbit/s (always negative)
+    pub hi_credit: i32,  // Upper credit boundary in bytes
+    pub lo_credit: i32,  // Lower credit boundary in bytes (always negative)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CbsError {
+    ZeroLinkSpeed,
+    ReservedBwExceedsCapacity,
+}
+
+impl CbsConfig {
+    pub fn new(idle_slope: i64, send_slope: i64, hi_credit: i32, lo_credit: i32) -> Self {
+        Self {
+            idle_slope,
+            send_slope,
+            hi_credit,
+            lo_credit,
+        }
+    }
+
+    /// Calculates IEEE 802.1Qav CBS parameters
+    ///
+    /// # Arguments
+    /// * `link_speed_kbps` - Total physical link rate in kbit/s (e.g., 1_000_000 for 1 Gbps)
+    /// * `reserved_bw_kbps` - CBS reserved bandwidth in kbit/s (e.g., 100_000 for 100 Mbps)
+    /// * `cbs_mtu_bytes` - MTU payload size for the target CBS traffic class (e.g., 1500)
+    /// * `int_mtu_bytes` - MTU payload size for interfering traffic (e.g., 1500)
+    pub fn new_with_bandwidth_and_mtu(
+        link_speed_kbps: u64,
+        reserved_bw_kbps: u64,
+        cbs_mtu_bytes: u32,
+        int_mtu_bytes: u32,
+    ) -> Option<CbsConfig> {
+        const ETHERNET_FRAME_OVERHEAD_BYTES: u32 = 42;
+
+        if link_speed_kbps == 0 || reserved_bw_kbps >= link_speed_kbps {
+            return None;
+        }
+
+        // Account for physical framing overheads
+        let s_cbs = (cbs_mtu_bytes + ETHERNET_FRAME_OVERHEAD_BYTES) as f64;
+        let s_int = (int_mtu_bytes + ETHERNET_FRAME_OVERHEAD_BYTES) as f64;
+
+        let c = link_speed_kbps as f64;
+        let r = reserved_bw_kbps as f64;
+
+        let idle_slope = reserved_bw_kbps as i64;
+        let send_slope = idle_slope - (link_speed_kbps as i64);
+
+        // hi_credit = S_int * (idle_slope / C) — rounded up to prevent latency starvation
+        let hi_credit = (s_int * (r / c)).ceil() as i32;
+
+        // lo_credit = S_cbs * (send_slope / C) — rounded down (more negative) for safe allocation
+        let lo_credit = (s_cbs * (send_slope as f64 / c)).floor() as i32;
+
+        Some(CbsConfig::new(idle_slope, send_slope, hi_credit, lo_credit))
+    }
+
+    pub fn new_with_bandwidth(link_speed_kbps: u64, reserved_bw_kbps: u64) -> Option<CbsConfig> {
+        Self::new_with_bandwidth_and_mtu(link_speed_kbps, reserved_bw_kbps, 1500, 1500)
+    }
 }
 
 fn traffic_context(
@@ -54,15 +135,33 @@ fn traffic_context(
     Ok(context)
 }
 
+struct BenchmarkResult {
+    rtc_stats_shell: Option<BTreeMap<String, TrafficStats>>,
+    eth_stats_shell: Statistics,
+    rtc_stats_partner: Option<BTreeMap<String, TrafficStats>>,
+    eth_stats_partner: Statistics,
+}
+
+impl BenchmarkResult {
+    pub fn log(&self) {
+        rtc_testbench::log_traffic_stats(&self.rtc_stats_shell);
+        rtc_testbench::log_traffic_stats(&self.rtc_stats_partner);
+        log::info!("DUT packet counts: {:?}", self.eth_stats_shell);
+        log::info!("LP packet counts: {:?}", self.eth_stats_partner);
+    }
+}
+
 fn run_rtc_benchmark(
+    config: &Config,
     shell: &mut impl CommandExecutor,
     partner: &mut SudoExecutor,
-    duration_secs: u64,
     competitive_egress: bool,
-) -> Result<(), Error> {
+) -> Result<BenchmarkResult, Error> {
+    const DURATION_SECS: u64 = 60;
+
     let startup_delay = 30;
-    let mirror_duration = duration_secs + startup_delay + 5;
-    let reference_duration = duration_secs + startup_delay;
+    let mirror_duration = DURATION_SECS + startup_delay + 5;
+    let reference_duration = DURATION_SECS + startup_delay;
     let timeout = reference_duration + 30;
 
     log::info!("Running RTC-Testbench (this will take {mirror_duration} seconds)");
@@ -72,8 +171,15 @@ fn run_rtc_benchmark(
     partner.cmd("rm mirror.log")?;
 
     if competitive_egress {
-        shell.cmd("iperf3 -c 192.168.10.2 -u -b 2G -i 0 -t 89 & sleep 1")?;
+        shell.cmd(format!(
+            "iperf3 -c {} -u -b 2G -i 0 -t {} & sleep 1",
+            config.ipaddr,
+            reference_duration - 1
+        ))?;
     }
+
+    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
+    let before_shell = ethtool::statistics(shell, &config.adapter)?;
 
     let (reference_result, mirror_result) = thread::scope(|s| {
         let mirror = s.spawn(|| {
@@ -94,7 +200,17 @@ fn run_rtc_benchmark(
     reference_result?;
     mirror_result?;
 
-    Ok(())
+    let eth_stats_shell = ethtool::statistics(shell, &config.adapter)? - before_shell;
+    let eth_stats_partner = ethtool::statistics(partner, &config.partner_adapter)? - before_partner;
+    let rtc_stats_shell = rtc_testbench::parse_log_line(shell.cmd("tail -1 reference.log")?);
+    let rtc_stats_partner = rtc_testbench::parse_log_line(partner.cmd("tail -1 mirror.log")?);
+
+    Ok(BenchmarkResult {
+        rtc_stats_shell,
+        eth_stats_shell,
+        rtc_stats_partner,
+        eth_stats_partner,
+    })
 }
 
 fn load_kernel_modules(shell: &mut impl CommandExecutor) -> Result<(), Error> {
@@ -289,7 +405,7 @@ fn stmmac_setup_egress_taprio(
 
     let qdisc = format!(
         concat!(
-            "tc qdisc replace dev {} handle 100 parent root taprio num_tc 4 ",
+            "tc qdisc replace dev {} handle 100 parent root stab overhead 28 taprio num_tc 4 ",
             //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
             "map  0  0  0  0  0  1  2  3  0  0  0  0  0  0  0  0 ",
             "queues 1@0 1@1 1@3 1@2 ",
@@ -345,6 +461,86 @@ fn stmmac_setup_egress_mqprio(
     Ok(())
 }
 
+/// Extend the mqprio configuration by applying bandwidth limiter.
+///
+/// Normally this is applied to high priority traffic (to ensure if it
+/// exceeds the specified bandwidth it will not harm other traffic). However
+/// for convenience we will apply it to the low priority traffic since it's
+/// easy to observe it's effect.
+fn stmmac_setup_egress_mqprio_cbs(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
+    // Queue #1 does not support CBS in hardware (hence "offload 0")
+    let cbs = CbsConfig::new_with_bandwidth(2500000, 800000).unwrap();
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:2 handle 102: cbs ",
+            "idleslope {} ",
+            "sendslope {} ",
+            "hicredit {} ",
+            "locredit {} ",
+            "offload 0"
+        ),
+        interface, cbs.idle_slope, cbs.send_slope, cbs.hi_credit, cbs.lo_credit
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:2"));
+
+    // Queue #2 (and #3) supports full hardware offload of CBS
+    let cbs = CbsConfig::new_with_bandwidth(2500000, 400000).unwrap();
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:3 handle 103: cbs ",
+            "idleslope {} ",
+            "sendslope {} ",
+            "hicredit {} ",
+            "locredit {} ",
+            "offload 1"
+        ),
+        interface, cbs.idle_slope, cbs.send_slope, cbs.hi_credit, cbs.lo_credit
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:3"));
+
+    let cbs = CbsConfig::new_with_bandwidth(2500000, 200000).unwrap();
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:4 handle 104: cbs ",
+            "idleslope {} ",
+            "sendslope {} ",
+            "hicredit {} ",
+            "locredit {} ",
+            "offload 1"
+        ),
+        interface, cbs.idle_slope, cbs.send_slope, cbs.hi_credit, cbs.lo_credit
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:4"));
+
+    Ok(())
+}
+
+/// Extend the mqprio configuration by applying ETF scheduling to the highest
+/// priority queue.
+///
+/// For a TC956x with 4 queues it is not possible to offload to hardware.
+fn stmmac_setup_egress_mqprio_tbs(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), Error> {
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:4 handle 104: etf ",
+            "clockid CLOCK_TAI ",
+            "delta 25000"
+        ),
+        interface
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:4"));
+
+    Ok(())
+}
+
 /// Rx Assignment for any 4 queue use-case
 ///
 /// Queue assignment is the same as taprio assignment:
@@ -394,6 +590,8 @@ fn stmmac_setup(
     load_kernel_modules(shell)?;
     napi_defer_hard_irqs(shell, interface, cycle_time_ns, &mut tracker)?;
 
+    tracker.add(format!("sleep 2"));
+
     // TODO: There appear to be problems cleaning up after hardware offload in
     //       stmmac. In particular the ingress filtering remains in effect after
     //       hardware offload is disabled. We can work around this by disabling
@@ -413,6 +611,16 @@ fn stmmac_setup(
             stmmac_setup_egress_mqprio(shell, interface, &mut tracker)?;
             stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
         }
+        QdiscUseCase::MqprioAndCbs => {
+            stmmac_setup_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_egress_mqprio_cbs(shell, interface, &mut tracker)?;
+            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+        }
+        QdiscUseCase::MqprioAndEtf => {
+            stmmac_setup_egress_mqprio(shell, interface, &mut tracker)?;
+            stmmac_setup_egress_mqprio_tbs(shell, interface, &mut tracker)?;
+            stmmac_setup_ingress_4_queue(shell, interface, &mut tracker)?;
+        }
     }
 
     boost_irq_threads(shell, interface, &mut tracker)?;
@@ -428,7 +636,7 @@ pub fn mac_setup(
 ) -> Result<UndoTracker, Error> {
     let interface = interface.as_ref();
     let connection = shell.connection();
-    log::info!("Setting up {interface} via {connection} connection");
+    log::debug!("Setting up {interface} via {connection} connection");
 
     let DriverInfo { eth_driver, .. } = DriverInfo::new(shell, interface)?;
     if eth_driver == "igc" {
@@ -439,7 +647,6 @@ pub fn mac_setup(
 }
 
 /// Setup PTP on the given interface
-///
 pub fn ptp_setup(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
@@ -447,14 +654,13 @@ pub fn ptp_setup(
 ) -> Result<UndoTracker, Error> {
     let interface = interface.as_ref();
     let connection = shell.connection();
-    log::info!("Setting up PTP for the {connection} connection");
+    log::debug!("Setting up PTP for the {connection} connection");
 
     let mut tracker = UndoTracker::new();
 
-    // Kill already running daemons (just in case) and clean up log files
+    // Kill already running daemons (just in case)
     shell.cmd("killall ptp4l")?;
     shell.cmd("killall phc2sys")?;
-    shell.cmd("rm -f ptp4l.log phc2sys.log")?;
 
     // Copy NTP time to PHC
     if role == PtpRole::Master {
@@ -468,19 +674,82 @@ pub fn ptp_setup(
 
     // Start PTP as a background process
     let extra_flags = if role == PtpRole::Slave { "-s" } else { "" };
-    shell.cmd(format!("setsid -f -- ptp4l -2 -H -i {interface} --socket_priority=4 --tx_timestamp_timeout=40 --hwts_filter=full --step_threshold=1 --transportSpecific=1 -m {extra_flags} > ptp4l.log"))?;
+    shell.cmd(format!("setsid -f -- ptp4l -2 -H -i {interface} --socket_priority=4 --tx_timestamp_timeout=40 --hwts_filter=full --step_threshold=1 --transportSpecific=1 {extra_flags}"))?;
     tracker.add(format!("killall ptp4l"));
 
     thread::sleep(Duration::from_secs(10));
 
     // Whether we are master or slave we will treat the NIC clock as the source
     // of truth and align the system clock to it.
-    shell.cmd(
-        "setsid -f -- phc2sys -a -rr --step_threshold=1 --transportSpecific=1 -m > phc2sys.log",
-    )?;
+    shell.cmd("setsid -f -- phc2sys -a -rr --step_threshold=1 --transportSpecific=1")?;
     tracker.add(format!("killall phc2sys"));
 
     Ok(tracker)
+}
+
+/// Poll `pmc` on the DUT until PTP has settled.
+///
+/// PTP is considered settled once we have seen five consecutive one-second
+/// samples where `offsetFromMaster` is within ±100 ns.
+fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), Error> {
+    const OFFSET_LIMIT_NS: f64 = 100.0;
+    const REQUIRED_CONSECUTIVE_SAMPLES: u32 = 5;
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    log::debug!(
+        "Waiting for offsetFromMaster to stay within ±{OFFSET_LIMIT_NS} ns for \
+         {REQUIRED_CONSECUTIVE_SAMPLES} consecutive seconds"
+    );
+
+    let mut consecutive = 0;
+    let start = Instant::now();
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= TIMEOUT {
+            return Err(Error::IO(io::Error::other(
+                "timed out waiting for PTP to settle",
+            )));
+        }
+
+        let total_secs = elapsed.as_secs();
+        let minutes = total_secs / 60;
+        let seconds = total_secs % 60;
+
+        if let Some(offset) = ptp_offset_from_master(shell)? {
+            print!("[{minutes:02}:{seconds:02}] offsetFromMaster: {offset:6.0} ns\r");
+            let _ = io::stdout().flush();
+
+            if offset.abs() <= OFFSET_LIMIT_NS {
+                consecutive += 1;
+            } else {
+                consecutive = 0;
+            }
+        } else {
+            log::info!("Failed to read offsetFromMaster, resetting streak");
+            consecutive = 0;
+        }
+
+        if consecutive >= REQUIRED_CONSECUTIVE_SAMPLES {
+            log::info!("PTP has settled");
+            return Ok(());
+        }
+
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Query the DUT's PTP client for `offsetFromMaster`, in nanoseconds.
+fn ptp_offset_from_master(shell: &mut impl CommandExecutor) -> Result<Option<f64>, Error> {
+    let output = shell.cmd("sudo pmc -u -b 0 -t 1 'GET CURRENT_DATA_SET'")?;
+    Ok(parse_ptp_offset_from_master(&output))
+}
+
+fn parse_ptp_offset_from_master(output: &str) -> Option<f64> {
+    output.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("offsetFromMaster")
+            .and_then(|rest| rest.trim().parse::<f64>().ok())
+    })
 }
 
 /// Setup both the DUT and the link partner for TSN testing.
@@ -492,6 +761,7 @@ pub fn tsn_setup(
     partner: &mut impl CommandExecutor,
     cycle_time_ns: u64,
     use_case: QdiscUseCase,
+    ptp: PtpMode,
 ) -> Result<(TrafficContext, UndoTracker, UndoTracker), Error> {
     let context = traffic_context(config, shell, partner)?;
 
@@ -502,11 +772,13 @@ pub fn tsn_setup(
         cycle_time_ns,
         use_case,
     )?);
-    partner_teardown.append(ptp_setup(
-        partner,
-        &context.mirror_interface,
-        PtpRole::Master,
-    )?);
+    if ptp == PtpMode::Enabled {
+        partner_teardown.append(ptp_setup(
+            partner,
+            &context.mirror_interface,
+            PtpRole::Master,
+        )?);
+    }
 
     let mut shell_teardown = UndoTracker::new();
     shell_teardown.append(mac_setup(
@@ -515,22 +787,15 @@ pub fn tsn_setup(
         cycle_time_ns,
         use_case,
     )?);
-    shell_teardown.append(ptp_setup(
-        shell,
-        &context.reference_interface,
-        PtpRole::Slave,
-    )?);
+    if ptp == PtpMode::Enabled {
+        shell_teardown.append(ptp_setup(
+            shell,
+            &context.reference_interface,
+            PtpRole::Slave,
+        )?);
 
-    log::info!("Waiting for PTP to settle");
-    thread::sleep(Duration::from_secs(90));
-
-    // Let's check that everything is working
-    //
-    // TODO: This is currently this is just an quick eyeball test
-    log::info!("{}", shell.cmd("tail -n1 ptp4l.log")?.trim());
-    log::info!("{}", shell.cmd("tail -n1 phc2sys.log")?.trim());
-    log::info!("{}", partner.cmd("tail -n1 ptp4l.log")?.trim());
-    log::info!("{}", partner.cmd("tail -n1 phc2sys.log")?.trim());
+        wait_for_ptp_settled(shell)?;
+    }
 
     Ok((context, shell_teardown, partner_teardown))
 }
@@ -617,26 +882,25 @@ pub fn profinet_cyclic_only(
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) =
-        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Taprio)?;
+    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
+        config,
+        shell,
+        partner,
+        cycle_time_ns,
+        QdiscUseCase::Taprio,
+        PtpMode::Enabled,
+    )?;
 
     config_cyclic_only(&context, shell, partner, cycle_time_ns)?;
 
-    let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60, false)?;
-    let after = ethtool::statistics(shell, &config.adapter)?;
-
-    let reference = shell.cmd("tail -1 reference.log")?;
-    let mirror = partner.cmd("tail -1 mirror.log")?;
-    let stats = (
-        rtc_testbench::parse_log_line(reference),
-        rtc_testbench::parse_log_line(mirror),
-    );
+    let benchmark = run_rtc_benchmark(config, shell, partner, false)?;
 
     partner_teardown.restore(partner)?;
     shell_teardown.restore(shell)?;
 
-    match &stats.0 {
+    benchmark.log();
+
+    match &benchmark.rtc_stats_shell {
         Some(stats) => {
             for tag in ["Rtc"] {
                 if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
@@ -650,12 +914,6 @@ pub fn profinet_cyclic_only(
             failures += 1;
         }
     }
-
-    rtc_testbench::log_traffic_stats(&stats.0);
-    rtc_testbench::log_traffic_stats(&stats.1);
-
-    let packet_counts = after - before;
-    log::info!("Packet counts: {packet_counts:?}");
 
     Ok(failures)
 }
@@ -775,7 +1033,6 @@ fn config_profinet_rt(
 
 pub fn profinet_rt_nop(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let cycle_time_ns = 1_000_000;
-    let mut failures = 0;
 
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
@@ -783,43 +1040,14 @@ pub fn profinet_rt_nop(config: &Config, shell: &mut impl CommandExecutor) -> Res
     let context = traffic_context(config, shell, partner)?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
-    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
-    let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60, true)?;
-    let after = ethtool::statistics(shell, &config.adapter)?;
-    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
-    let reference = shell.cmd("tail -1 reference.log")?;
-    let mirror = partner.cmd("tail -1 mirror.log")?;
-    let stats = (
-        rtc_testbench::parse_log_line(reference),
-        rtc_testbench::parse_log_line(mirror),
-    );
+    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
 
-    match &stats.0 {
-        Some(stats) => {
-            for tag in ["Rtc", "Rta", "Dcp", "Lldp", "UdpHigh", "UdpLow"] {
-                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
-                    log::error!("{tag}Received is zero");
-                    failures += 1;
-                }
-            }
-        }
-        None => {
-            log::error!("Failed to parse reference stats");
-            failures += 1;
-        }
-    }
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
+    benchmark.log();
 
-    rtc_testbench::log_traffic_stats(&stats.0);
-    rtc_testbench::log_traffic_stats(&stats.1);
-
-    let packet_counts = after - before;
-    log::info!("DUT packet counts: {packet_counts:?}");
-    let packet_counts = after_partner - before_partner;
-    log::info!("LP packet counts:  {packet_counts:?}");
-
-    Ok(failures)
+    Ok(0)
 }
 
 pub fn profinet_rt_mqprio_xdp(
@@ -827,55 +1055,31 @@ pub fn profinet_rt_mqprio_xdp(
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, Error> {
     let cycle_time_ns = 1_000_000;
-    let mut failures = 0;
 
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) =
-        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Mqprio)?;
+    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
+        config,
+        shell,
+        partner,
+        cycle_time_ns,
+        QdiscUseCase::Mqprio,
+        PtpMode::Enabled,
+    )?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
-    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
-    let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60, true)?;
-    let after = ethtool::statistics(shell, &config.adapter)?;
-    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
-    let reference = shell.cmd("tail -1 reference.log")?;
-    let mirror = partner.cmd("tail -1 mirror.log")?;
-    let stats = (
-        rtc_testbench::parse_log_line(reference),
-        rtc_testbench::parse_log_line(mirror),
-    );
+    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
 
     partner_teardown.restore(partner)?;
     shell_teardown.restore(shell)?;
 
-    match &stats.0 {
-        Some(stats) => {
-            for tag in ["Rtc", "Rta", "Dcp", "Lldp", "UdpHigh", "UdpLow"] {
-                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
-                    log::error!("{tag}Received is zero");
-                    failures += 1;
-                }
-            }
-        }
-        None => {
-            log::error!("Failed to parse reference stats");
-            failures += 1;
-        }
-    }
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
+    benchmark.log();
 
-    rtc_testbench::log_traffic_stats(&stats.0);
-    rtc_testbench::log_traffic_stats(&stats.1);
-
-    let packet_counts = after - before;
-    log::info!("DUT packet counts: {packet_counts:?}");
-    let packet_counts = after_partner - before_partner;
-    log::info!("LP packet counts:  {packet_counts:?}");
-
-    Ok(failures)
+    Ok(0)
 }
 
 pub fn profinet_rt_mqprio_noxdp(
@@ -883,106 +1087,740 @@ pub fn profinet_rt_mqprio_noxdp(
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, Error> {
     let cycle_time_ns = 1_000_000;
-    let mut failures = 0;
 
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) =
-        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Mqprio)?;
+    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
+        config,
+        shell,
+        partner,
+        cycle_time_ns,
+        QdiscUseCase::Mqprio,
+        PtpMode::Enabled,
+    )?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
-    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
-    let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60, true)?;
-    let after = ethtool::statistics(shell, &config.adapter)?;
-    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
-    let reference = shell.cmd("tail -1 reference.log")?;
-    let mirror = partner.cmd("tail -1 mirror.log")?;
-    let stats = (
-        rtc_testbench::parse_log_line(reference),
-        rtc_testbench::parse_log_line(mirror),
-    );
-
+    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
     partner_teardown.restore(partner)?;
     shell_teardown.restore(shell)?;
 
-    match &stats.0 {
-        Some(stats) => {
-            for tag in ["Rtc", "Rta", "Dcp", "Lldp", "UdpHigh", "UdpLow"] {
-                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
-                    log::error!("{tag}Received is zero");
-                    failures += 1;
-                }
-            }
-        }
-        None => {
-            log::error!("Failed to parse reference stats");
-            failures += 1;
-        }
-    }
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
+    benchmark.log();
 
-    rtc_testbench::log_traffic_stats(&stats.0);
-    rtc_testbench::log_traffic_stats(&stats.1);
+    Ok(0)
+}
 
-    let packet_counts = after - before;
-    log::info!("DUT packet counts: {packet_counts:?}");
-    let packet_counts = after_partner - before_partner;
-    log::info!("LP packet counts:  {packet_counts:?}");
+pub fn profinet_rt_mqprio_and_cbs(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let cycle_time_ns = 1_000_000;
 
-    Ok(failures)
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
+        config,
+        shell,
+        partner,
+        cycle_time_ns,
+        QdiscUseCase::MqprioAndCbs,
+        PtpMode::Enabled,
+    )?;
+
+    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
+
+    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
+    benchmark.log();
+
+    Ok(0)
 }
 
 pub fn profinet_rt_taprio(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
     let cycle_time_ns = 1_000_000;
-    let mut failures = 0;
 
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) =
-        tsn_setup(config, shell, partner, cycle_time_ns, QdiscUseCase::Taprio)?;
+    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
+        config,
+        shell,
+        partner,
+        cycle_time_ns,
+        QdiscUseCase::Taprio,
+        PtpMode::Enabled,
+    )?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
-    let before_partner = ethtool::statistics(partner, &config.partner_adapter)?;
-    let before = ethtool::statistics(shell, &config.adapter)?;
-    run_rtc_benchmark(shell, partner, 60, false)?;
-    let after = ethtool::statistics(shell, &config.adapter)?;
-    let after_partner = ethtool::statistics(partner, &config.partner_adapter)?;
 
-    let reference = shell.cmd("tail -1 reference.log")?;
-    let mirror = partner.cmd("tail -1 mirror.log")?;
-    let stats = (
-        rtc_testbench::parse_log_line(reference),
-        rtc_testbench::parse_log_line(mirror),
-    );
+    let benchmark = run_rtc_benchmark(config, shell, partner, false)?;
 
     partner_teardown.restore(partner)?;
     shell_teardown.restore(shell)?;
 
-    match &stats.0 {
-        Some(stats) => {
-            for tag in ["Rtc", "Rta", "Dcp", "Lldp", "UdpHigh", "UdpLow"] {
-                if stats.get(tag).map(|s| s.received).unwrap_or(0) == 0 {
-                    log::error!("{tag}Received is zero");
-                    failures += 1;
-                }
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
+    benchmark.log();
+
+    Ok(0)
+}
+
+/// A single result line from a `netperf -t UDP_STREAM` run.
+///
+/// The five fields are the "Socket Size", "Message Size", "Elapsed Time",
+/// "Messages" (Okay) and "Throughput" columns of the netperf report. The
+/// "Message Size" column is optional: it is absent from the send-side
+/// result lines.
+#[derive(Debug, PartialEq)]
+struct NetperfStatus {
+    socket_size: u64,
+    message_size: Option<u64>,
+    elapsed: f64,
+    okay: u64,
+    /// Throughput in 10^6 bits/sec.
+    throughput: f64,
+}
+
+/// Parses the result lines from the output of one or more concurrent
+/// `netperf -t UDP_STREAM` runs, returning an iterator over the parsed
+/// `NetperfStatus` values.
+///
+/// The interesting result lines have one of two shapes. Receive-side lines
+/// include both the "Message Size" and "Errors" columns:
+///
+/// ```text
+/// 212992   65507   5.00         6949      0     728.14
+/// ```
+///
+/// Send-side lines have four fields; the "Message Size" and "Errors"
+/// columns are missing:
+///
+/// ```text
+/// 212992           5.00         2761            289.31
+/// ```
+///
+/// In both cases field 3 is the elapsed time and the final field is the
+/// throughput in 10^6 bits/sec. Lines that do not look like result lines
+/// (banners, headers, blank lines) are skipped.
+fn parse_netperf_throughput(output: &str) -> impl Iterator<Item = NetperfStatus> + '_ {
+    output.lines().filter_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+
+        let (socket_size, message_size, elapsed, okay, throughput) = match fields.as_slice() {
+            // Receive-side line: message size present, errors ignored.
+            [socket, message, elapsed, okay, _errors, throughput] => (
+                socket.parse().ok()?,
+                Some(message.parse().ok()?),
+                elapsed.parse().ok()?,
+                okay.parse().ok()?,
+                throughput.parse().ok()?,
+            ),
+            // Send-side line: message size (and errors) absent.
+            [socket, elapsed, okay, throughput] => (
+                socket.parse().ok()?,
+                None,
+                elapsed.parse().ok()?,
+                okay.parse().ok()?,
+                throughput.parse().ok()?,
+            ),
+            _ => return None,
+        };
+
+        Some(NetperfStatus {
+            socket_size,
+            message_size,
+            elapsed,
+            okay,
+            throughput,
+        })
+    })
+}
+
+/// Run netperf with the given use case and return the low and high priority
+/// throughput.
+fn netperf_pair(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+    use_case: Option<QdiscUseCase>,
+) -> Result<(f64, f64), Error> {
+    const DURATION_UDP_HIGH: u64 = 10;
+    const DURATION_RTC: u64 = DURATION_UDP_HIGH + 2;
+
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let (mut shell_teardown, mut partner_teardown) = if let Some(use_case) = use_case {
+        let (_, shell_teardown, partner_teardown) = tsn_setup(
+            config,
+            shell,
+            partner,
+            1_000_000,
+            use_case,
+            PtpMode::Disabled,
+        )?;
+
+        (shell_teardown, partner_teardown)
+    } else {
+        (UndoTracker::new(), UndoTracker::new())
+    };
+
+    partner.cmd("netserver")?;
+    partner_teardown.add("killall netserver".to_string());
+
+    let reply = shell.with_timeout_secs(DURATION_UDP_HIGH + 30, |sh| {
+        sh.cmd(format!(
+            concat!(
+                "netperf -H {} -l {} -y 7 -t UDP_STREAM -- -m 1472 & ",
+                "sleep 1; ",
+                "netperf -H {} -l {} -y 5 -t UDP_STREAM -- -m 1472; ",
+                "wait"
+            ),
+            config.ipaddr, DURATION_RTC, config.ipaddr, DURATION_UDP_HIGH
+        ))
+    })?;
+
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    let mut rtc = 0.0;
+    let mut udp_high = 0.0;
+
+    for status in parse_netperf_throughput(&reply) {
+        if status.message_size.is_none() {
+            match status.elapsed as u64 {
+                DURATION_UDP_HIGH => udp_high = status.throughput,
+                DURATION_RTC => rtc = status.throughput,
+                _ => {}
             }
-        }
-        None => {
-            log::error!("Failed to parse reference stats");
-            failures += 1;
         }
     }
 
-    rtc_testbench::log_traffic_stats(&stats.0);
-    rtc_testbench::log_traffic_stats(&stats.1);
+    let priorities = (rtc, udp_high);
+    log::info!("high to low priority throughput: {priorities:?}");
 
-    let packet_counts = after - before;
-    log::info!("DUT packet counts: {packet_counts:?}");
-    let packet_counts = after_partner - before_partner;
-    log::info!("LP packet counts:  {packet_counts:?}");
+    Ok(priorities)
+}
+
+/// Run two competing UDP streams on a default-configured network device.
+///
+/// We expect both streams to achieve similar bandwidth but with the "high"
+/// priority stream achieving more throughput because it has no competition
+/// for two seconds of its runtime.
+pub fn netperf_pair_nop(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    let (hi, lo) = netperf_pair(config, shell, None)?;
+
+    let mut failures = 0;
+
+    if hi < 750.0 || hi > 1500.0 {
+        log::error!("netperf_pair_nop: netperf high priority throughput is out of range: {hi}");
+        failures += 1;
+    }
+
+    if lo < 750.0 || lo > 1500.0 {
+        log::error!("netperf_pair_nop: netperf low priority throughput is out of range: {lo}");
+        failures += 1;
+    }
+
+    if lo > hi {
+        log::error!(
+            "netperf_pair_nop: netperf low priority throughput is greater than high: {lo} vs {hi}"
+        );
+        failures += 1;
+    }
 
     Ok(failures)
+}
+
+/// Run two UDP streams on a taprio configured network device.
+///
+/// The two streams are not competing because they are time gated and don't
+/// share a gate. Based in the taprio configuration (above) the high
+/// priority stream should receive approximately 10% of the bandwidth,
+/// while the low priority stream should get 40%.
+pub fn netperf_pair_taprio(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::Taprio))?;
+
+    let mut failures = 0;
+
+    if hi < 125.0 || hi > 250.0 {
+        log::error!("netperf_pair_taprio: netperf high priority throughput is out of range: {hi}");
+        failures += 1;
+    }
+
+    if lo < 600.0 || lo > 1000.0 {
+        log::error!("netperf_pair_taprio: netperf low priority throughput is out of range: {lo}");
+        failures += 1;
+    } else if lo < 750.0 {
+        log::warn!(
+            "netperf_pair_taprio: low priority throughput is low (but within variability): {lo}"
+        );
+    }
+
+    Ok(failures)
+}
+
+/// Run two competing UDP streams the on a mqprio configured network device.
+///
+/// The two streams are competing head on and the higher priority stream should
+/// get massively more bandwidth than the other.
+pub fn netperf_pair_mqprio(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::Mqprio))?;
+
+    let mut failures = 0;
+
+    if hi < 1000.0 {
+        log::error!("netperf_pair_mqprio: netperf high priority throughput is out of range: {hi}");
+        failures += 1;
+    }
+
+    if lo > 300.0 {
+        log::error!("netperf_pair_mqprio: netperf low priority throughput is out of range: {lo}");
+        failures += 1;
+    } else if lo > 150.0 {
+        log::warn!(
+            "netperf_pair_mqprio: netperf low priority throughput is high (but within variability): {lo}"
+        );
+    }
+
+    Ok(failures)
+}
+
+/// Run two competing UDP streams the on a mqprio configured network device that
+/// uses CBS (Credit-Based Shaping) to limit the bandwidth of each stream.
+///
+/// The two streams are competing but both have CBS shaping that should dictate
+/// the throughput of each.
+///
+/// Note that on TC956x devices, only the high priority stream will be using
+/// hardware offloading for CBS. The low priority stream is on a queue that does
+/// not support hardware offload and therefore has a relaxed lower bandwidth
+/// limit (since software CBS performance can be unpredictable).
+pub fn netperf_pair_mqprio_and_cbs(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbs))?;
+
+    let mut failures = 0;
+
+    if hi < 150.0 || hi > 200.0 {
+        log::error!(
+            "netperf_pair_mqprio_and_cbs: netperf high priority throughput is out of range: {hi}"
+        );
+        failures += 1;
+    }
+
+    if lo < 100.0 || lo > 600.0 {
+        log::error!(
+            "netperf_pair_mqprio_and_cbs: netperf low priority throughput is out of range: {lo}"
+        );
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+/// Similar to `netperf_pair` (above) but runs four UDP streams rather than just two.
+fn netperf_quad(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+    use_case: Option<QdiscUseCase>,
+) -> Result<(f64, f64, f64, f64), Error> {
+    const DURATION_UDP_LOW: u64 = 10;
+    const DURATION_UDP_HIGH: u64 = DURATION_UDP_LOW + 2;
+    const DURATION_RTA: u64 = DURATION_UDP_HIGH + 2;
+    const DURATION_RTC: u64 = DURATION_RTA + 2;
+
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let (mut shell_teardown, mut partner_teardown) = if let Some(use_case) = use_case {
+        let (_, shell_teardown, partner_teardown) = tsn_setup(
+            config,
+            shell,
+            partner,
+            1_000_000,
+            use_case,
+            PtpMode::Disabled,
+        )?;
+
+        (shell_teardown, partner_teardown)
+    } else {
+        (UndoTracker::new(), UndoTracker::new())
+    };
+
+    partner.cmd("netserver")?;
+    partner_teardown.add("killall netserver".to_string());
+
+    let reply = shell.with_timeout_secs(DURATION_UDP_LOW + 30, |sh| {
+        sh.cmd(format!(
+            concat!(
+                "netperf -H {} -l {} -y 7 -t UDP_STREAM -- -m 1472 & ",
+                "sleep 1; ",
+                "netperf -H {} -l {} -y 6 -t UDP_STREAM -- -m 1472 & ",
+                "sleep 1; ",
+                "netperf -H {} -l {} -y 5 -t UDP_STREAM -- -m 1472 & ",
+                "sleep 1; ",
+                "netperf -H {} -l {} -y 4 -t UDP_STREAM -- -m 1472; ",
+                "wait"
+            ),
+            config.ipaddr,
+            DURATION_RTC,
+            config.ipaddr,
+            DURATION_RTA,
+            config.ipaddr,
+            DURATION_UDP_HIGH,
+            config.ipaddr,
+            DURATION_UDP_LOW
+        ))
+    })?;
+
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    let mut rtc = 0.0;
+    let mut rta = 0.0;
+    let mut udp_high = 0.0;
+    let mut udp_low = 0.0;
+
+    for status in parse_netperf_throughput(&reply) {
+        if status.message_size.is_some() {
+            match status.elapsed as u64 {
+                DURATION_UDP_LOW => udp_low = status.throughput,
+                DURATION_UDP_HIGH => udp_high = status.throughput,
+                DURATION_RTA => rta = status.throughput,
+                DURATION_RTC => rtc = status.throughput,
+                _ => {}
+            }
+        }
+    }
+
+    let priorities = (rtc, rta, udp_high, udp_low);
+    log::info!("high to low priority throughput: {priorities:?}");
+
+    Ok(priorities)
+}
+
+pub fn netperf_quad_nop(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+    const DURATION_SECS: f64 = 300.0;
+
+    const T: f64 = 2500.0 * 1.2;
+    const T_UDP_LOW: f64 = T / 4.0;
+    const T_UDP_HIGH: f64 = (2.0 * (T / 3.0) + DURATION_SECS * T_UDP_LOW) / (DURATION_SECS + 2.0);
+    const T_RTA: f64 =
+        (2.0 * (T / 2.0) + (DURATION_SECS + 2.0) * T_UDP_HIGH) / (DURATION_SECS + 4.0);
+    const T_RTC: f64 = (2.0 * T + (DURATION_SECS + 4.0) * T_RTA) / (DURATION_SECS + 6.0);
+
+    let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, None)?;
+
+    let mut failures = 0;
+
+    if rtc > T_RTC {
+        log::error!("netperf_quad_nop: rtc throughput is too high: {rtc}");
+        failures += 1;
+    }
+
+    if rta > T_RTA {
+        log::error!("netperf_quad_nop: rta throughput is too high: {rta}");
+        failures += 1;
+    }
+
+    if udp_high > T_UDP_HIGH {
+        log::error!("netperf_quad_nop: udp_high throughput is too high: {udp_high}");
+        failures += 1;
+    }
+
+    if udp_low > T_UDP_LOW {
+        log::error!("netperf_quad_nop: udp_low throughput is too high: {udp_low}");
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+pub fn netperf_quad_taprio(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, Some(QdiscUseCase::Taprio))?;
+
+    let mut failures = 0;
+
+    if rtc > 250.0 {
+        log::error!("netperf_quad_taprio: rtc throughput is too high: {rtc}");
+        failures += 1;
+    }
+
+    if rta > 250.0 {
+        log::error!("netperf_quad_taprio: rta throughput is too high: {rta}");
+        failures += 1;
+    }
+
+    if udp_high > 1000.0 {
+        log::error!("netperf_quad_taprio: udp-high throughput is too high: {udp_high}");
+        failures += 1;
+    }
+
+    if udp_low > 1000.0 {
+        log::error!("netperf_quad_taprio: udp-low throughput is too high: {udp_low}");
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+pub fn netperf_quad_mqprio(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, Some(QdiscUseCase::Mqprio))?;
+
+    let mut failures = 0;
+
+    if rtc < 1000.0 {
+        log::error!("netperf_quad_mqprio: rtc throughput is too low: {rtc}");
+        failures += 1;
+    }
+
+    if rta > 150.0 {
+        log::error!("netperf_quad_mqprio: rta throughput is too high: {rta}");
+        failures += 1;
+    }
+
+    if udp_high > 150.0 {
+        log::error!("netperf_quad_mqprio: udp-high throughput is too high: {udp_high}");
+        failures += 1;
+    }
+
+    if udp_low > 150.0 {
+        log::error!("netperf_quad_mqprio: udp-low throughput is too high: {udp_low}");
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+pub fn netperf_quad_mqprio_and_cbs(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let (rtc, rta, udp_high, _) = netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbs))?;
+
+    let mut failures = 0;
+
+    if rtc > 200.0 {
+        log::error!("netperf_quad_mqprio_and_cbs: rtc throughput is too high: {rtc}");
+        failures += 1;
+    }
+
+    if rta > 400.0 {
+        log::error!("netperf_quad_mqprio_and_cbs: rta throughput is too high: {rta}");
+        failures += 1;
+    }
+
+    if udp_high > 600.0 {
+        log::error!("netperf_quad_mqprio_and_cbs: udp-high throughput is too high: {udp_high}");
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+pub fn txrx_tsn_mqprio_and_etf(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, Error> {
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let partner_mac_addr = ip::mac_address(partner, &config.partner_adapter)?;
+
+    let (_, mut shell_teardown, mut partner_teardown) = tsn_setup(
+        config,
+        shell,
+        partner,
+        1_000_000,
+        QdiscUseCase::MqprioAndEtf,
+        PtpMode::Enabled,
+    )?;
+
+    partner.cmd("rm -f packet.log")?;
+    partner.cmd(format!(
+        "setsid -f -- txrx-tsn --interface {} --afpkt --receive --frames-to-send=1200 --hw-timestamps > packet.log",
+        config.partner_adapter
+    ))?;
+    partner_teardown.add(format!("killall txrx-tsn"));
+
+    thread::sleep(Duration::from_secs(1));
+
+    shell.with_timeout_secs(30, |sh| {
+        sh.cmd(format!(
+            concat!(
+                "chrt -f 35 ",
+                "txrx-tsn --interface {} --afpkt --transmit --hw-timestamps ",
+                "--dst-mac-addr={} ",
+                "--frames-to-send=1500 --cycle-time=10000000 ",
+                "--vlan-prio=7 ",
+                "--launchtime --early-offset=5000000"
+            ),
+            config.partner_adapter, partner_mac_addr
+        ))
+    })?;
+
+    // We are deliberately tearing down the partner second. We are allowing
+    // time for the receiver to finish processing the packets.
+    shell_teardown.restore(shell)?;
+    partner_teardown.restore(partner)?;
+
+    let log = partner.cmd("cat packet.log")?;
+    let deltas = log
+        .lines()
+        .map(|ln| {
+            let mut fields = ln.split_whitespace();
+            let tx_time = fields.nth(4).unwrap_or("").parse::<u64>().unwrap_or(0);
+            let rx_time = fields.next().unwrap_or("").parse::<u64>().unwrap_or(0);
+
+            (rx_time - 37_000_000_000) as f64 - tx_time as f64
+        })
+        .collect::<Vec<_>>();
+
+    let min = deltas.clone().min();
+    let max = deltas.clone().max();
+    let mean = deltas.clone().mean();
+    let stddev = deltas.clone().std_dev();
+    let len = deltas.len();
+
+    log::info!(
+        "txrx_tsn_etf_software: delta stats: N={len} min={min} mean={mean} max={max} stddev={stddev}",
+    );
+
+    let mut failures = 0;
+
+    if len < 250 {
+        log::error!("txrx_tsn_etf_software: Expected >250 samples, got {len}",);
+        failures += 1;
+    }
+
+    if mean.abs() > 25000.0 {
+        log::error!("txrx_tsn_etf_software: Mean delta is too large: {mean} ns");
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CbsConfig, NetperfStatus, parse_netperf_throughput, parse_ptp_offset_from_master};
+
+    const NETPERF_OUTPUT: &str = "\
+MIGRATED UDP STREAM TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 192.168.10.2 () port 0 AF_INET : demo
+MIGRATED UDP STREAM TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 192.168.10.2 () port 0 AF_INET : demo
+Socket  Message  Elapsed      Messages
+Size    Size     Time         Okay Errors   Throughput
+bytes   bytes    secs            #      #   10^6bits/sec
+
+212992   65507   5.00         6949      0     728.14
+212992           5.00         2761            289.31
+
+Socket  Message  Elapsed      Messages
+Size    Size     Time         Okay Errors   Throughput
+bytes   bytes    secs            #      #   10^6bits/sec
+
+212992    1472   7.00        61528      0     103.50
+212992           7.00        61483            103.43";
+
+    const PMC_OUTPUT: &str = "sending: GET CURRENT_DATA_SET\
+        \n\t025efb.fffe.641bcb-0 seq 0 RESPONSE MANAGEMENT CURRENT_DATA_SET\
+        \n\t\tstepsRemoved     1\
+        \n\t\toffsetFromMaster 23.0\
+        \n\t\tmeanPathDelay    3989.0";
+
+    #[test]
+    fn parses_offset_from_master() {
+        assert_eq!(parse_ptp_offset_from_master(PMC_OUTPUT), Some(23.0));
+    }
+
+    #[test]
+    fn parses_negative_offset() {
+        let output = "\t\toffsetFromMaster -87.0";
+        assert_eq!(parse_ptp_offset_from_master(output), Some(-87.0));
+    }
+
+    #[test]
+    fn missing_offset_is_none() {
+        assert_eq!(parse_ptp_offset_from_master("no data here"), None);
+    }
+
+    #[test]
+    fn parses_netperf_throughput() {
+        let statuses: Vec<NetperfStatus> = parse_netperf_throughput(NETPERF_OUTPUT).collect();
+
+        assert_eq!(
+            statuses,
+            [
+                NetperfStatus {
+                    socket_size: 212992,
+                    message_size: Some(65507),
+                    elapsed: 5.00,
+                    okay: 6949,
+                    throughput: 728.14,
+                },
+                NetperfStatus {
+                    socket_size: 212992,
+                    message_size: None,
+                    elapsed: 5.00,
+                    okay: 2761,
+                    throughput: 289.31,
+                },
+                NetperfStatus {
+                    socket_size: 212992,
+                    message_size: Some(1472),
+                    elapsed: 7.00,
+                    okay: 61528,
+                    throughput: 103.50,
+                },
+                NetperfStatus {
+                    socket_size: 212992,
+                    message_size: None,
+                    elapsed: 7.00,
+                    okay: 61483,
+                    throughput: 103.43,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn netperf_missing_lines_are_skipped() {
+        let statuses: Vec<NetperfStatus> =
+            parse_netperf_throughput("no netperf output here").collect();
+
+        assert!(statuses.is_empty());
+    }
+
+    #[test]
+    fn cbs_config_new_with_bandwidth() {
+        let config = CbsConfig::new_with_bandwidth(1_000_000, 100_000).unwrap();
+
+        assert_eq!(config.idle_slope, 100_000);
+        assert_eq!(config.send_slope, -900_000);
+        // hi_credit = ceil(1542 * 100_000 / 1_000_000) = ceil(154.2) = 155
+        assert_eq!(config.hi_credit, 155);
+        // lo_credit = floor(1542 * -900_000 / 1_000_000) = floor(-1387.8) = -1388
+        assert_eq!(config.lo_credit, -1388);
+    }
 }

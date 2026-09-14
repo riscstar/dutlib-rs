@@ -102,6 +102,21 @@ impl SudoExecutor {
             executor: NativeExecutor::new(),
         }
     }
+
+    pub fn load_module(&mut self, module_name: &str) -> Result<(), Error> {
+        let lsmod = self.cmd("lsmod")?;
+
+        if !lsmod.contains(module_name) {
+            // Check for incompatible module state
+            if module_name.contains("tc956x") && lsmod.contains("tc956x") {
+                return Err(io::Error::other("Incorrect module is already loaded").into());
+            }
+
+            self.cmd(format!("modprobe {module_name}"))?;
+        }
+
+        Ok(())
+    }
 }
 
 impl CommandExecutor for SudoExecutor {

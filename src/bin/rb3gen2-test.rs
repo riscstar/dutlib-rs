@@ -8,7 +8,7 @@ use expectrl::Error;
 
 use dutlib::{
     CommandExecutor, Config,
-    native::NativeExecutor,
+    native::{NativeExecutor, SudoExecutor},
     plans::{self, Selection, TestPlan},
     read_config, tests,
     tsn_tests::{self, PtpRole},
@@ -203,7 +203,7 @@ pub struct TsnCli {
 }
 
 fn setup_tsn(config: Config, args: TsnCli) -> Result<(), Error> {
-    let mut shell = NativeExecutor::new();
+    let mut shell = SudoExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&config.module)?;
     tests::wait_for_ipv4(&config, &mut shell)?;
