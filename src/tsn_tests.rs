@@ -612,7 +612,7 @@ fn stmmac_setup_4q_egress_mqprio_tbs(
         concat!(
             "tc qdisc replace dev {} parent 100:4 handle 104: etf ",
             "clockid CLOCK_TAI ",
-            "delta 25000"
+            "delta 100000"
         ),
         interface
     ))?;
@@ -634,7 +634,7 @@ fn stmmac_setup_5q_egress_mqprio_tbs(
         concat!(
             "tc qdisc replace dev {} parent 100:5 handle 105: etf ",
             "clockid CLOCK_TAI ",
-            "delta 25000 ",
+            "delta 100000 ",
             "offload"
         ),
         interface
@@ -694,7 +694,7 @@ struct ChannelSettings {
 }
 
 /// Get the current hardware queue counts for the given interface
-fn mac_get_queue_count(
+fn stmmac_get_queue_count(
     shell: &mut impl CommandExecutor,
     interface: &str,
 ) -> Result<ChannelSettings, Error> {
@@ -732,6 +732,13 @@ fn parse_channel_settings(output: &str) -> Result<ChannelSettings, Error> {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
+
+        // Only the four channel keys are of interest. Anything else (e.g.
+        // shell prompt remnants) is ignored so that it cannot be mistaken
+        // for a channel setting.
+        if !matches!(key.trim(), "RX" | "TX" | "Other" | "Combined") {
+            continue;
+        }
 
         let value = value.trim();
         if value == "n/a" {
@@ -786,7 +793,7 @@ fn stmmac_setup(
     shell.cmd(format!("ethtool -K {interface} rx-vlan-offload off"))?;
     tracker.add(format!("ethtool -K {interface} rx-vlan-offload on"));
 
-    let channel_settings = mac_get_queue_count(shell, interface)?;
+    let channel_settings = stmmac_get_queue_count(shell, interface)?;
     let tx = channel_settings.tx.unwrap_or(1);
 
     // tsn_setup() already aborts 5 queue tests if they are not supported
@@ -862,26 +869,65 @@ pub fn ptp_setup(
     shell.cmd("killall ptp4l")?;
     shell.cmd("killall phc2sys")?;
 
-    // Copy NTP time to PHC
     if role == PtpRole::Master {
+        // Copy NTP time to PHC
         shell.cmd(format!("phc_ctl {interface} set"))?;
+    } else {
+        // Stop NTP service on the slave (on the master need to leave it
+        // running so it can provide us the UTC/TAI offset)
+        shell.cmd("systemctl stop systemd-timesyncd")?;
+        tracker.add(format!("sleep 2"));
+        tracker.add(format!("systemctl start systemd-timesyncd"));
     }
 
-    // Stop NTP service
-    shell.cmd("systemctl stop systemd-timesyncd")?;
-    tracker.add(format!("sleep 2"));
-    tracker.add(format!("systemctl start systemd-timesyncd"));
+    thread::sleep(Duration::from_secs(1));
 
     // Start PTP as a background process
     let extra_flags = if role == PtpRole::Slave { "-s" } else { "" };
     shell.cmd(format!("setsid -f -- ptp4l -2 -H -i {interface} --socket_priority=4 --tx_timestamp_timeout=40 --hwts_filter=full --step_threshold=1 --transportSpecific=1 {extra_flags}"))?;
     tracker.add(format!("killall ptp4l"));
 
+    if role == PtpRole::Master {
+        thread::sleep(Duration::from_secs(1));
+
+        // Configure the grandmaster's clock setup:
+        shell.cmd(concat!(
+            "pmc -u -b 0 -t 1 'SET GRANDMASTER_SETTINGS_NP ",
+            "clockClass 248 ",                 // Default/Uncordinated
+            "clockAccuracy 0x2b ",             // Within 10ms
+            "offsetScaledLogVariance 0xffff ", // Unspecified
+            "currentUtcOffset 37 ",            // UTC to TAI offset
+            "leap61 0 ",                       // No leap second
+            "leap59 0 ",                       // No leap second
+            "currentUtcOffsetValid 1 ",        // UTC offset is known good
+            "ptpTimescale 1 ",                 // Network clocks are TAI
+            "timeTraceable 1 ",                // Clock is traceable
+            "frequencyTraceable 0 ",           // Frequency is not traceable
+            "timeSource 0x50 ",                // Time is anchored using NTP
+            "'"
+        ))?;
+    }
+
     thread::sleep(Duration::from_secs(10));
 
-    // Whether we are master or slave we will treat the NIC clock as the source
-    // of truth and align the system clock to it.
-    shell.cmd("setsid -f -- phc2sys -a -rr --step_threshold=1 --transportSpecific=1")?;
+    let phc2sys_flags = if role == PtpRole::Master {
+        // For the master we need to configure phc2sys manually. Automatic setup
+        // should work by gathering the settings from ptp4l (e.g. those set
+        // above) but this results in the PTP clock being synced to
+        // CLOCK_REALTIME rather than CLOCK_TAI).
+        //
+        // In that basis it is rather odd that to get the right relationship
+        // when syncing CLOCK_REALTIME to eth0 that I must set the offset to
+        // zero!
+        format!("-s CLOCK_REALTIME -c {interface} -O 0")
+    } else {
+        // When syncing from PHC to then all the automatic discovery across the
+        //  network works perfectly!
+        format!("-a -r")
+    };
+    shell.cmd(format!(
+        "setsid -f -- phc2sys {phc2sys_flags} --step_threshold=1 --transportSpecific=1"
+    ))?;
     tracker.add(format!("killall phc2sys"));
 
     Ok(tracker)
@@ -963,7 +1009,7 @@ pub fn tsn_setup(
     use_case: QdiscUseCase,
     ptp: PtpMode,
 ) -> Result<(TrafficContext, UndoTracker, UndoTracker), Error> {
-    let channel_settings = mac_get_queue_count(shell, &config.adapter)?;
+    let channel_settings = stmmac_get_queue_count(shell, &config.adapter)?;
     let tx = channel_settings.tx.unwrap_or(1);
     if tx < 5
         && (use_case == QdiscUseCase::MqprioAndCbsWith5Queues
@@ -1633,7 +1679,7 @@ pub fn netperf_pair_mqprio_and_cbs(
         failures += 1;
     }
 
-    if lo < 100.0 || lo > 650.0 {
+    if lo < 500.0 || lo > 800.0 {
         log::error!(
             "netperf_pair_mqprio_and_cbs: netperf low priority throughput is out of range: {lo}"
         );
@@ -1662,7 +1708,7 @@ pub fn netperf_pair_mqprio_and_cbs_with_5_queues(
         failures += 1;
     }
 
-    if lo < 400.0 || lo > 600.0 {
+    if lo < 700.0 || lo > 800.0 {
         log::error!(
             "netperf_pair_mqprio_and_cbs: netperf low priority throughput is out of range: {lo}"
         );
@@ -1925,7 +1971,7 @@ fn txrx_tsn(
 
     partner.cmd("rm -f packet.log")?;
     partner.cmd(format!(
-        "setsid -f -- txrx-tsn --interface {} --afpkt --receive --frames-to-send=1200 --hw-timestamps > packet.log",
+        "setsid -f chrt -f 35 txrx-tsn --interface {} --afpkt --receive --frames-to-send=1200 --hw-timestamps > packet.log",
         config.partner_adapter
     ))?;
     partner_teardown.add(format!("killall txrx-tsn"));
@@ -1936,6 +1982,7 @@ fn txrx_tsn(
         sh.cmd(format!(
             concat!(
                 "chrt -f 35 ",
+                "strace -o txrx-tsn.log -- ",
                 "txrx-tsn --interface {} --afpkt --transmit --hw-timestamps ",
                 "--dst-mac-addr={} ",
                 "--frames-to-send=1500 --cycle-time=10000000 ",
@@ -1959,7 +2006,7 @@ fn txrx_tsn(
             let tx_time = fields.nth(4).unwrap_or("").parse::<u64>().unwrap_or(0);
             let rx_time = fields.next().unwrap_or("").parse::<u64>().unwrap_or(0);
 
-            (rx_time - 37_000_000_000) as f64 - tx_time as f64
+            rx_time as f64 - tx_time as f64
         })
         .collect::<Vec<_>>();
 
@@ -1975,13 +2022,16 @@ fn txrx_tsn(
 
     let mut failures = 0;
 
-    if len < 250 {
-        log::error!("txrx_tsn_mqprio_and_etf: Expected >250 samples, got {len}",);
+    // If packets go missing that's usually because they were still valid (before
+    // deadline) when issued by userspace but were dropped by the kernel for
+    // being late as they were issued to the DMA queue.
+    if len < 1200 {
+        log::error!("txrx_tsn_mqprio_and_etf: Expected >1200 samples, got {len}",);
         failures += 1;
     }
 
-    if mean.abs() > 25000.0 {
-        log::error!("txrx_tsn_mqprio_and_etf: Mean delta is too large: {mean} ns");
+    if mean < 0.0 {
+        log::error!("txrx_tsn_mqprio_and_etf: Most packets were not ready in time: {mean} ns");
         failures += 1;
     }
 
