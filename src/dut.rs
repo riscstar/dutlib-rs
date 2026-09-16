@@ -1,20 +1,18 @@
 use expectrl::{
-    Error, Expect, Session,
+    Expect, Session,
     repl::ReplSession,
     session::{OsProcess, OsSession, OsStream},
     stream::log::LogStream,
 };
-use std::{
-    io::{self, Stdout},
-    process::Command,
-    thread,
-    time::Duration,
+use std::{io::Stdout, process::Command, thread, time::Duration};
+
+use crate::{
+    CommandExecutor, CommandExecutorConnection, SessionExt, UnrecoverableError,
+    UnrecoverableErrorKind,
 };
 
-use crate::{CommandExecutor, CommandExecutorConnection, SessionExt};
-
 impl CommandExecutor for ReplSession<OsSession> {
-    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
+    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, UnrecoverableError> {
         log::info!(">>> {}", cmd.as_ref());
         let reply = if cmd.as_ref().contains('\n') {
             // Newlines play havoc with the echo suppression. Let's just
@@ -26,7 +24,7 @@ impl CommandExecutor for ReplSession<OsSession> {
         } else {
             self.execute(cmd)
         };
-        reply.map(|raw| {
+        reply.map_err(UnrecoverableError::from).map(|raw| {
             let mut s = String::new();
 
             if raw.len() > 21 {
@@ -101,7 +99,7 @@ impl DeviceUnderTest {
         }
     }
 
-    pub fn console(&mut self) -> Result<ReplSession<OsSession>, Error> {
+    pub fn console(&mut self) -> Result<ReplSession<OsSession>, UnrecoverableError> {
         log::info!("Connecting to console ({:?})", self.state);
         if self.state == MachineState::Crashed {
             let mut iter = self.power_cycle.split_ascii_whitespace();
@@ -111,9 +109,9 @@ impl DeviceUnderTest {
                 let output = cmd.output()?;
                 log::debug!("Power-cycle: {output:?}");
             } else {
-                return Err(
-                    io::Error::other("TOML configuration error: power_cycle is not set").into(),
-                );
+                return Err(UnrecoverableError::message(
+                    "TOML configuration error: power_cycle is not set",
+                ));
             };
         }
 
@@ -123,7 +121,9 @@ impl DeviceUnderTest {
             cmd.args(iter);
             Session::spawn(cmd)?
         } else {
-            return Err(io::Error::other("TOML configuration error: console is not set").into());
+            return Err(UnrecoverableError::message(
+                "TOML configuration error: console is not set",
+            ));
         };
 
         if self.console.contains("picocom") {
@@ -138,18 +138,18 @@ impl DeviceUnderTest {
                 {
                     log::debug!("{:?}", remaining);
                     log::error!("Terminal emulator cannot start (port busy?)");
-                    return Err(err);
+                    return Err(err.into());
                 }
 
                 if remaining.as_deref().unwrap_or("").contains("password: ") {
                     log::debug!("{:?}", remaining);
                     log::warn!("Received password prompt (missing ssh credentials?");
-                    return Err(err);
+                    return Err(err.into());
                 }
 
                 log::debug!("{:?}", remaining);
                 log::warn!("Cannot connect to target");
-                return Err(err);
+                return Err(err.into());
             }
         }
 
@@ -170,15 +170,15 @@ impl DeviceUnderTest {
         // Probe to see if a shell is present
         uart.send_line("")?;
         uart.send_line("echo sync ch''eck")?;
-        match uart.expect("sync check") {
+        match uart.expect("sync check").map_err(UnrecoverableError::from) {
             Ok(_) => {
                 self.state = MachineState::Booted;
             }
-            Err(Error::ExpectTimeout) => {
+            Err(err) if matches!(err.kind(), UnrecoverableErrorKind::ExpectTimeout) => {
                 log::debug!("{:?}", uart.try_read_to_string());
                 log::warn!("Timed out during synchronization check");
                 return if self.state == MachineState::Crashed {
-                    Err(Error::ExpectTimeout)
+                    Err(err)
                 } else {
                     self.crashed(uart);
                     self.console()
@@ -218,7 +218,7 @@ impl DeviceUnderTest {
     pub fn console_with_module(
         &mut self,
         module_name: &str,
-    ) -> Result<ReplSession<OsSession>, Error> {
+    ) -> Result<ReplSession<OsSession>, UnrecoverableError> {
         let mut shell = self.console()?;
 
         let lsmod = shell.cmd("lsmod")?;
@@ -239,7 +239,7 @@ impl DeviceUnderTest {
     /// Send a reboot command to the target device.
     ///
     /// This function deliberately drops `shell` to force a clean shutdown.
-    pub fn reboot(&mut self, mut shell: ReplSession<OsSession>) -> Result<(), Error> {
+    pub fn reboot(&mut self, mut shell: ReplSession<OsSession>) -> Result<(), UnrecoverableError> {
         // The `reboot` is a fire-and-forget command (rather than waiting for the
         // prompt) because sometimes the close down messages interfere with the
         // display of the prompt.

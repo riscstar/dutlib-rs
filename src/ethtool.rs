@@ -1,8 +1,6 @@
-use std::{io, thread, time::Duration};
+use std::{thread, time::Duration};
 
-use expectrl::Error;
-
-use crate::{CommandExecutor, tracker::UndoTracker};
+use crate::{CommandExecutor, UnrecoverableError, tracker::UndoTracker};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct AdapterInfo {
@@ -10,11 +8,14 @@ pub struct AdapterInfo {
 }
 
 /// Gather information about the adapter
-pub fn info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<AdapterInfo, Error> {
+pub fn info(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+) -> Result<AdapterInfo, UnrecoverableError> {
     let reply = shell.cmd(&format!("ethtool --json {adapter}"))?;
     let json = serde_json::from_str::<serde_json::Value>(&reply).map_err(|e| {
         log::error!("{e}");
-        io::Error::other("Cannot parse JSON from ethtool")
+        UnrecoverableError::message("Cannot parse JSON from ethtool")
     })?;
 
     let speed = json[0]["speed"].as_i64().map(|s| s as u32);
@@ -34,7 +35,7 @@ pub fn get_speed(shell: &mut impl CommandExecutor, adapter: &str) -> f64 {
 pub fn wait_link_up(
     shell: &mut impl CommandExecutor,
     adapter: &str,
-) -> Result<Option<AdapterInfo>, Error> {
+) -> Result<Option<AdapterInfo>, UnrecoverableError> {
     for _ in 0..10 {
         let info = info(shell, adapter)?;
         if info.speed.is_some() {
@@ -53,7 +54,7 @@ pub fn cmd_and_wait_link_up(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     cmd: &str,
-) -> Result<Option<AdapterInfo>, Error> {
+) -> Result<Option<AdapterInfo>, UnrecoverableError> {
     shell.cmd(format!("ethtool {cmd}").replace("<ADAPTER>", adapter))?;
 
     // We assume the above command will cause the PHY to renegotiate. Let's
@@ -74,7 +75,7 @@ pub fn advertise(
     adapter: &str,
     advertisement: u64,
     undo: Option<&mut UndoTracker>,
-) -> Result<Option<AdapterInfo>, Error> {
+) -> Result<Option<AdapterInfo>, UnrecoverableError> {
     let info = cmd_and_wait_link_up(
         shell,
         adapter,
@@ -96,15 +97,17 @@ pub fn show_feature(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     feature: &str,
-) -> Result<bool, Error> {
+) -> Result<bool, UnrecoverableError> {
     let reply = shell.cmd(&format!("ethtool --json --show-features {adapter}"))?;
     let json = serde_json::from_str::<serde_json::Value>(&reply).map_err(|e| {
         log::error!("{e}");
-        io::Error::other("Cannot parse JSON from ethtool")
+        UnrecoverableError::message("Cannot parse JSON from ethtool")
     })?;
 
     let Some(active) = json[0][feature]["active"].as_bool() else {
-        return Err(io::Error::other(format!("Cannot lookup ethtool {feature} feature")).into());
+        return Err(UnrecoverableError::message(format!(
+            "Cannot lookup ethtool {feature} feature"
+        )));
     };
 
     Ok(active)
@@ -117,7 +120,7 @@ pub fn feature(
     adapter: &str,
     feature: &str,
     state: bool,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let active = show_feature(shell, adapter, feature)?;
 
     let _ = shell.cmd(&format!(
@@ -206,7 +209,10 @@ impl std::ops::Sub for Statistics {
     }
 }
 
-pub fn statistics(shell: &mut impl CommandExecutor, adapter: &str) -> Result<Statistics, Error> {
+pub fn statistics(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+) -> Result<Statistics, UnrecoverableError> {
     let mut stats = Statistics::new();
 
     // No --json for ethtool statistics

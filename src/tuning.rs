@@ -1,8 +1,6 @@
-use expectrl::Error;
+use crate::{CommandExecutor, Config, UnrecoverableError, ethtool, native::SudoExecutor};
 
-use crate::{CommandExecutor, Config, ethtool, native::SudoExecutor};
-
-fn apply_tuning(shell: &mut impl CommandExecutor) -> Result<(), Error> {
+fn apply_tuning(shell: &mut impl CommandExecutor) -> Result<(), UnrecoverableError> {
     // Disable high latency cpuidle states
     shell.cmd("cpupower idle-set --disable-by-latency 100")?;
 
@@ -22,7 +20,10 @@ fn apply_tuning(shell: &mut impl CommandExecutor) -> Result<(), Error> {
 ///
 /// This is *not* a test case and there is no logic to "undo" the tuning after
 /// is has been applied.
-pub fn autotune(config: &Config, shell: &mut impl CommandExecutor) -> Result<(), Error> {
+pub fn autotune(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<(), UnrecoverableError> {
     if !config.no_autotune {
         apply_tuning(shell)?;
 

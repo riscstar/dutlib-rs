@@ -1,6 +1,5 @@
 use std::{
     fs::{self},
-    io::{self},
     process::Command,
     sync::LazyLock,
     thread,
@@ -8,12 +7,11 @@ use std::{
 };
 
 use errno::Errno;
-use expectrl::Error;
 use regex::Regex;
 use serde::Deserialize;
 
 use crate::{
-    CommandExecutor, Config,
+    CommandExecutor, Config, UnrecoverableError,
     ethtool::{self, AdapterInfo},
     ip,
     native::SudoExecutor,
@@ -28,7 +26,10 @@ pub struct DriverInfo {
 }
 
 impl DriverInfo {
-    pub fn new(shell: &mut impl CommandExecutor, adapter: &str) -> Result<Self, Error> {
+    pub fn new(
+        shell: &mut impl CommandExecutor,
+        adapter: &str,
+    ) -> Result<Self, UnrecoverableError> {
         let mut eth_driver = "unknown";
         let mut bus_info = "unknown";
 
@@ -59,7 +60,10 @@ impl DriverInfo {
 }
 
 /// Show what drivers have bound to the adapter
-pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<(), Error> {
+pub fn driver_info(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+) -> Result<(), UnrecoverableError> {
     let DriverInfo {
         eth_driver,
         bus_info,
@@ -72,7 +76,10 @@ pub fn driver_info(shell: &mut impl CommandExecutor, adapter: &str) -> Result<()
 }
 
 /// Wait for the specified IP address to be assigned to the board
-pub fn wait_for_ipv4(config: &Config, shell: &mut impl CommandExecutor) -> Result<(), Error> {
+pub fn wait_for_ipv4(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<(), UnrecoverableError> {
     let adapter = &config.adapter;
     for _ in 0..6 {
         let reply = shell.cmd(&format!("ip -4 addr show {adapter}"))?;
@@ -85,11 +92,13 @@ pub fn wait_for_ipv4(config: &Config, shell: &mut impl CommandExecutor) -> Resul
         thread::sleep(Duration::from_secs(5));
     }
 
-    Err(io::Error::other("Timed out waiting for IP address").into())
+    Err(UnrecoverableError::message(
+        "Timed out waiting for IP address",
+    ))
 }
 
 /// Capture basic kernel version management data
-pub fn uname(shell: &mut impl CommandExecutor) -> Result<String, Error> {
+pub fn uname(shell: &mut impl CommandExecutor) -> Result<String, UnrecoverableError> {
     let reply = shell.cmd(&format!("uname -a"))?;
     log::info!("uname: {reply}");
     Ok(reply)
@@ -103,7 +112,11 @@ struct PingStats {
     //mdev: f64,
 }
 
-fn ping_raw(shell: &mut impl CommandExecutor, ipaddr: &str, args: &str) -> Result<String, Error> {
+fn ping_raw(
+    shell: &mut impl CommandExecutor,
+    ipaddr: &str,
+    args: &str,
+) -> Result<String, UnrecoverableError> {
     shell.with_timeout_secs(20, |sh| sh.cmd(&format!("ping {ipaddr} {args}")))
 }
 
@@ -111,7 +124,7 @@ fn ping_helper_with_stats(
     shell: &mut impl CommandExecutor,
     ipaddr: &str,
     args: &str,
-) -> Result<Option<PingStats>, Error> {
+) -> Result<Option<PingStats>, UnrecoverableError> {
     let reply = ping_raw(shell, ipaddr, args)?;
 
     if !reply.contains(" 0% packet loss") {
@@ -147,7 +160,7 @@ pub fn ping_helper(
     shell: &mut impl CommandExecutor,
     ipaddr: &str,
     args: &str,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let stats = ping_helper_with_stats(shell, ipaddr, args)?;
     if let Some(stats) = stats.as_ref() {
         log::info!("{name}: {stats:?}");
@@ -169,27 +182,39 @@ pub fn ping_helper(
 }
 
 /// Issue 10 pings at 0.5s intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ping(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, UnrecoverableError> {
     ping_helper("ping", shell, &config.ipaddr, "-c 10 -i 0.5")
 }
 
 /// Issue 10 pings at 1s intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_1s(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ping_1s(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     ping_helper("ping_1s", shell, &config.ipaddr, "-c 10")
 }
 
 /// Issue 100 pings at 100ms intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_100ms(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ping_100ms(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     ping_helper("ping_100ms", shell, &config.ipaddr, "-c 100 -i 0.1")
 }
 
 /// Issue 1000 pings at 10ms intervals, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_10ms(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ping_10ms(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     ping_helper("ping_10ms", shell, &config.ipaddr, "-c 1000 -i 0.01")
 }
 
 /// Issue 5000 pings at maximum rate, check for packet loss and confirm RTT summary exceeds threshold
-pub fn ping_flood(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ping_flood(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     ping_helper("ping_flood", shell, &config.ipaddr, "-c 5000 -f")
 }
 
@@ -197,7 +222,7 @@ fn iperf3_helper(
     config: &Config,
     shell: &mut impl CommandExecutor,
     args: &str,
-) -> Result<([f64; 2], [f64; 2]), Error> {
+) -> Result<([f64; 2], [f64; 2]), UnrecoverableError> {
     let ipaddr = &config.ipaddr;
     let reply = shell.cmd(&format!("iperf3 -c {ipaddr} -i 5 -t 5 --json {args}"))?;
 
@@ -207,7 +232,7 @@ fn iperf3_helper(
 
     let json = serde_json::from_str::<serde_json::Value>(&reply[offset..]).map_err(|e| {
         log::error!("{e}");
-        io::Error::other("Cannot parse JSON from iperf3")
+        UnrecoverableError::message("Cannot parse JSON from iperf3")
     })?;
 
     Ok((
@@ -239,7 +264,7 @@ pub fn iperf3_bidir_tuneable(
     shell: &mut impl CommandExecutor,
     tx_threshold: f64,
     rx_threshold: f64,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (tx, rx) = iperf3_helper(config, shell, "--bidir")?;
     log::info!("iperf3_bidir: TX is {tx:?}, RX is {rx:?}");
 
@@ -257,7 +282,10 @@ pub fn iperf3_bidir_tuneable(
     )
 }
 
-pub fn iperf3_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_bidir(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let speed = ethtool::get_speed(shell, &config.adapter);
     let (tthresh, rthresh) = (
         speed * 0.7,
@@ -271,7 +299,10 @@ pub fn iperf3_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result
     iperf3_bidir_tuneable(config, shell, tthresh, rthresh)
 }
 
-pub fn iperf3_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_rx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let bench = iperf3_helper(config, shell, "-R")?.0;
     log::info!("iperf3_rx: RX is {bench:?}");
     let threshold = ethtool::get_speed(shell, &config.adapter) * 0.8;
@@ -284,7 +315,10 @@ pub fn iperf3_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u3
     })
 }
 
-pub fn iperf3_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_tx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let bench = iperf3_helper(config, shell, "")?.0;
     log::info!("iperf3_tx: TX performance is {bench:?}");
     let threshold = ethtool::get_speed(shell, &config.adapter) * 0.8;
@@ -297,7 +331,10 @@ pub fn iperf3_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u3
     })
 }
 
-pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ethtool_selftest(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let driver_info = DriverInfo::new(shell, &config.adapter)?;
     if driver_info.bus_driver == "igc" {
         log::info!("ethtool_selftest: Adapter is not a STMMAC device, skipping test");
@@ -407,7 +444,7 @@ pub fn ethtool_selftest(config: &Config, shell: &mut impl CommandExecutor) -> Re
 pub fn verify_log_messages(
     _config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     // dwmac-tc956x 0001:05:00.1 enP1p5s0f1: PHY [stmmac-501:1c] driver [Qualcomm QCA8081] (irq=279)
@@ -562,7 +599,10 @@ pub fn verify_log_messages(
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn scp_bidir(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let ipaddr = &config.ipaddr;
 
     // The vendor driver has very limited RX bandwidth so we need a depressingly
@@ -614,7 +654,10 @@ pub fn scp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u3
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn scp_rx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let ipaddr = &config.ipaddr;
 
     // The vendor driver has very limited RX bandwidth so we need a depressingly
@@ -641,7 +684,10 @@ pub fn scp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, 
 ///
 /// This test will timeout if run over a link slower than 1g (scp cannot copy
 /// a gigabyte in that timeframe)
-pub fn scp_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn scp_tx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let ipaddr = &config.ipaddr;
 
     shell.with_timeout_secs(30, |sh| {
@@ -664,9 +710,14 @@ pub fn scp_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, 
 /// Run a ethtool command on the link partner.
 ///
 /// This can be used to restrict the advertised link modes.
-pub fn link_partner_ethtool(args: &str, partner_adapter: Option<&str>) -> Result<(), Error> {
+pub fn link_partner_ethtool(
+    args: &str,
+    partner_adapter: Option<&str>,
+) -> Result<(), UnrecoverableError> {
     let Some(partner_adapter) = partner_adapter else {
-        return Err(io::Error::other("TOML config error: remote_adapater is not set").into());
+        return Err(UnrecoverableError::message(
+            "TOML config error: remote_adapater is not set",
+        ));
     };
 
     let output = Command::new("sudo")
@@ -680,7 +731,9 @@ pub fn link_partner_ethtool(args: &str, partner_adapter: Option<&str>) -> Result
     if output.status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(format!("ethtool failed: {output:?}")).into())
+        Err(UnrecoverableError::message(format!(
+            "ethtool failed: {output:?}"
+        )))
     }
 }
 
@@ -688,7 +741,7 @@ pub fn link_partner_ethtool(args: &str, partner_adapter: Option<&str>) -> Result
 pub fn link_mode_and_partner_advertise_all(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -718,7 +771,7 @@ fn link_partner_advertise_helper(
     shell: &mut impl CommandExecutor,
     advertisement: u64,
     expected_speed: u32,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -810,7 +863,7 @@ fn link_partner_advertise_helper(
 pub fn link_partner_advertise_1000baset_full(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     link_partner_advertise_helper(config, shell, 0x0020, 1000)
 }
 
@@ -819,7 +872,7 @@ pub fn link_partner_advertise_1000baset_full(
 pub fn link_partner_advertise_100baset_full(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     link_partner_advertise_helper(config, shell, 0x0008, 100)
 }
 
@@ -828,7 +881,7 @@ pub fn link_partner_advertise_100baset_full(
 pub fn link_partner_advertise_10baset_full(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     link_partner_advertise_helper(config, shell, 0x0002, 10)
 }
 
@@ -837,7 +890,7 @@ fn link_mode_advertise_helper(
     shell: &mut impl CommandExecutor,
     advertisement: u64,
     expected_speed: u32,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -916,7 +969,7 @@ fn link_mode_advertise_helper(
 pub fn link_mode_advertise_all(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -941,7 +994,7 @@ pub fn link_mode_advertise_all(
 pub fn link_mode_advertise_1000baset_full(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     link_mode_advertise_helper(config, shell, 0x003f, 1000)
 }
 
@@ -949,7 +1002,7 @@ pub fn link_mode_advertise_1000baset_full(
 pub fn link_mode_advertise_100baset_full(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     link_mode_advertise_helper(config, shell, 0x000f, 100)
 }
 
@@ -957,7 +1010,7 @@ pub fn link_mode_advertise_100baset_full(
 pub fn link_mode_advertise_10baset_full(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     link_mode_advertise_helper(config, shell, 0x0003, 10)
 }
 
@@ -1019,7 +1072,7 @@ fn iperf3_new_helper(
     config: &Config,
     shell: &mut impl CommandExecutor,
     args: &str,
-) -> Result<IperfResult, Error> {
+) -> Result<IperfResult, UnrecoverableError> {
     let ipaddr = &config.ipaddr;
 
     let reply = shell.with_timeout_secs(45, |sh| {
@@ -1033,7 +1086,9 @@ fn iperf3_new_helper(
     match serde_json::from_str::<IperfResult>(&reply[offset..]) {
         Ok(json) => {
             if let Some(error) = json.error {
-                Err(io::Error::other(format!("iperf3 reported error: {error}")).into())
+                Err(UnrecoverableError::message(format!(
+                    "iperf3 reported error: {error}"
+                )))
             } else {
                 Ok(json)
             }
@@ -1041,10 +1096,9 @@ fn iperf3_new_helper(
         Err(e) => {
             log::error!("{e}");
             fs::write("iperf3.json", &reply[offset..])?;
-            Err(
-                io::Error::other("Cannot parse JSON from iperf3 (see iperf3.json for details)")
-                    .into(),
-            )
+            Err(UnrecoverableError::message(
+                "Cannot parse JSON from iperf3 (see iperf3.json for details)",
+            ))
         }
     }
 }
@@ -1052,7 +1106,7 @@ fn iperf3_new_helper(
 pub fn iperf3_intervals_bidir(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let stats = iperf3_new_helper(config, shell, "-i 5 --bidir")?;
 
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
@@ -1124,7 +1178,7 @@ pub fn iperf3_intervals_bidir(
 pub fn iperf3_intervals_tx(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let stats = iperf3_new_helper(config, shell, "-i 5")?;
 
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
@@ -1180,7 +1234,7 @@ pub fn iperf3_intervals_tx(
 pub fn iperf3_intervals_rx(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let stats = iperf3_new_helper(config, shell, "-i 5 -R")?;
 
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
@@ -1233,7 +1287,10 @@ pub fn iperf3_intervals_rx(
     Ok(failures)
 }
 
-pub fn iperf3_udp_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_udp_bidir(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
@@ -1308,7 +1365,7 @@ fn required_trials(n: u64, target_prob: f64) -> u64 {
 pub fn iperf3_udp_tx_all_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
     let bitrate = (speed_mbps * 0.1) as u32;
 
@@ -1371,7 +1428,10 @@ pub fn iperf3_udp_tx_all_queues(
     Ok(failures)
 }
 
-pub fn iperf3_udp_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_udp_tx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
@@ -1405,7 +1465,10 @@ pub fn iperf3_udp_tx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     Ok(failures)
 }
 
-pub fn iperf3_udp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_udp_rx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
     let bitrate = (speed_mbps * 0.8) as u32;
 
@@ -1442,7 +1505,10 @@ pub fn iperf3_udp_rx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     Ok(failures)
 }
 
-pub fn iperf3_x16_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_x16_bidir(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let stats = iperf3_new_helper(config, shell, &format!("-i 30 --parallel 8 --bidir"))?;
 
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
@@ -1517,7 +1583,10 @@ pub fn iperf3_x16_bidir(config: &Config, shell: &mut impl CommandExecutor) -> Re
     Ok(failures)
 }
 
-pub fn iperf3_x16_tx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_x16_tx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let stats = iperf3_new_helper(config, shell, &format!("-i 30 --parallel 16"))?;
 
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
@@ -1568,7 +1637,10 @@ pub fn iperf3_x16_tx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
     Ok(failures)
 }
 
-pub fn iperf3_x16_rx(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn iperf3_x16_rx(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let stats = iperf3_new_helper(config, shell, &format!("-i 30 --parallel 16 -R"))?;
 
     let speed_mbps = ethtool::get_speed(shell, &config.adapter);
@@ -1623,7 +1695,10 @@ pub fn iperf3_x16_rx(config: &Config, shell: &mut impl CommandExecutor) -> Resul
 // System integration tests
 //
 
-pub fn suspend_resume(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn suspend_resume(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     if !shell.cmd("ls /sys/power")?.contains("pm_test") {
@@ -1651,7 +1726,7 @@ pub fn suspend_resume(config: &Config, shell: &mut impl CommandExecutor) -> Resu
 pub fn disable_checksum_offload(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -1686,7 +1761,10 @@ pub fn disable_checksum_offload(
     Ok(failures)
 }
 
-pub fn disable_tso(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn disable_tso(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -1714,18 +1792,21 @@ pub fn disable_tso(config: &Config, shell: &mut impl CommandExecutor) -> Result<
     Ok(failures)
 }
 
-pub fn ethtool_show_eee(shell: &mut impl CommandExecutor, adapter: &str) -> Result<String, Error> {
+pub fn ethtool_show_eee(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+) -> Result<String, UnrecoverableError> {
     let reply = shell.cmd(format!("ethtool --json --show-eee {adapter}"))?;
     let json = serde_json::from_str::<serde_json::Value>(&reply).map_err(|e| {
         log::error!("{e}");
-        io::Error::other("Cannot parse JSON from ethtool")
+        UnrecoverableError::message("Cannot parse JSON from ethtool")
     })?;
 
     let status = json[0]["status"].as_str().unwrap_or("invalid");
     Ok(status.to_string())
 }
 
-pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -1783,7 +1864,7 @@ pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Err
     Ok(failures)
 }
 
-pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
     let adapter = &config.adapter;
@@ -1818,7 +1899,10 @@ pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Err
     Ok(failures)
 }
 
-pub fn vlan_smoke_test(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn vlan_smoke_test(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let adapter = &config.adapter;
     let mut partner = SudoExecutor::new();
     let partner_adapter = &config.partner_adapter;
@@ -1911,7 +1995,10 @@ fn ptp_check_offsets(offsets: &[i64]) -> u32 {
     failures
 }
 
-pub fn ptp_receiver(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ptp_receiver(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let adapter = &config.adapter;
     let mut partner = SudoExecutor::new();
     let partner_adapter = &config.partner_adapter;
@@ -1939,7 +2026,10 @@ pub fn ptp_receiver(config: &Config, shell: &mut impl CommandExecutor) -> Result
     Ok(ptp_check_offsets(&offsets))
 }
 
-pub fn ptp_transmitter(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn ptp_transmitter(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let adapter = &config.adapter;
     let mut partner = SudoExecutor::new();
     let partner_adapter = &config.partner_adapter;

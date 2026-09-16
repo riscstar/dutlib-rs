@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use expectrl::Error;
-
-use crate::CommandExecutor;
+use crate::{CommandExecutor, UnrecoverableError};
 
 pub struct UndoTracker {
     commands: Vec<String>,
@@ -28,7 +26,7 @@ impl UndoTracker {
         shell: &mut impl CommandExecutor,
         path: impl AsRef<Path>,
         value: impl AsRef<str>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), UnrecoverableError> {
         let path = path.as_ref().to_string_lossy();
         let value = value.as_ref();
 
@@ -39,7 +37,7 @@ impl UndoTracker {
         Ok(())
     }
 
-    pub fn restore(&mut self, shell: &mut impl CommandExecutor) -> Result<(), Error> {
+    pub fn restore(&mut self, shell: &mut impl CommandExecutor) -> Result<(), UnrecoverableError> {
         while let Some(action) = self.commands.pop() {
             let _ = shell.cmd(action)?;
         }

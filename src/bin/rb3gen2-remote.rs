@@ -1,13 +1,10 @@
-use std::{
-    io::{self, ErrorKind},
-    process,
-};
+use std::process;
 
 use clap::{Parser, Subcommand};
-use expectrl::{Error, repl::ReplSession, session::OsSession};
+use expectrl::{repl::ReplSession, session::OsSession};
 
 use dutlib::{
-    CommandExecutor, Config,
+    CommandExecutor, Config, UnrecoverableError, UnrecoverableErrorKind,
     dut::DeviceUnderTest,
     plans::{self, Selection, TestPlan},
     read_config, tests,
@@ -87,7 +84,7 @@ pub struct RebootCli {
     wait: bool,
 }
 
-fn reboot(config: Config, args: RebootCli) -> Result<(), Error> {
+fn reboot(config: Config, args: RebootCli) -> Result<(), UnrecoverableError> {
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     let mut console = board.console()?;
     let _ = board.reboot(console);
@@ -135,7 +132,7 @@ fn all_test_plans() -> TestPlan<ReplSession<OsSession>> {
     plan
 }
 
-fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
+fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), UnrecoverableError> {
     let all_plans = all_test_plans();
     let mut plan = None;
     for candidate in all_plans.into_iter() {
@@ -191,7 +188,9 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), Error> {
         } else if bad == 0 {
             log::info!("Successfully completed {good} iterations");
         } else {
-            return Err(io::Error::other(format!("FAILED after {good} iterations")).into());
+            return Err(UnrecoverableError::message(format!(
+                "FAILED after {good} iterations"
+            )));
         }
     }
 
@@ -212,7 +211,7 @@ fn run_test(
     config: Config,
     args: RunTestCli,
     test_plan: TestPlan<ReplSession<OsSession>>,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     if args.reboot {
         let console = board.console()?;
@@ -227,9 +226,10 @@ fn run_test(
 
     match test_plan.run(&config, &mut console) {
         Ok(0) => Ok(()),
-        Ok(n) => {
-            Err(io::Error::other(format!("{} reported {n} failures", test_plan.name())).into())
-        }
+        Ok(n) => Err(UnrecoverableError::message(format!(
+            "{} reported {n} failures",
+            test_plan.name()
+        ))),
         Err(e) => {
             log::info!("{:?}", console.try_read_to_string());
             Err(e)
@@ -243,7 +243,7 @@ pub struct AllTestsCli {
     #[arg(short, long)]
     reboot: bool,
 }
-fn all_tests(config: Config, args: AllTestsCli) -> Result<(), Error> {
+fn all_tests(config: Config, args: AllTestsCli) -> Result<(), UnrecoverableError> {
     let plan = all_test_plans();
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     if args.reboot {
@@ -288,11 +288,13 @@ fn all_tests(config: Config, args: AllTestsCli) -> Result<(), Error> {
             log::info!("All tests completed successfully");
             Ok(())
         }
-        n => Err(io::Error::other(format!("All tests completed but reported {n} failures")).into()),
+        n => Err(UnrecoverableError::message(format!(
+            "All tests completed but reported {n} failures"
+        ))),
     }
 }
 
-fn app() -> Result<(), Error> {
+fn app() -> Result<(), UnrecoverableError> {
     let mut cli = Cli::parse();
 
     let levels = [
@@ -337,19 +339,15 @@ fn app() -> Result<(), Error> {
 }
 
 fn main() {
-    match app() {
-        Ok(()) => {}
-        Err(Error::IO(e)) if e.kind() == ErrorKind::Other => {
-            log::error!("{e}");
-            process::exit(1);
-        }
-        Err(Error::IO(e)) => {
-            log::error!("IO error: {e}");
-            process::exit(2);
-        }
-        Err(e) => {
-            log::error!("{e}");
-            process::exit(3);
-        }
-    }
+    let Err(e) = app() else {
+        return;
+    };
+
+    log::error!("{e:?}");
+
+    process::exit(match e.kind() {
+        UnrecoverableErrorKind::Message(_) => 1,
+        UnrecoverableErrorKind::Io(_) => 2,
+        _ => 3,
+    });
 }

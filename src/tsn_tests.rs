@@ -5,11 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use expectrl::Error;
 use statrs::statistics::Statistics as StatrsStatistics;
 
 use crate::{
-    CommandExecutor, Config,
+    CommandExecutor, Config, UnrecoverableError,
     ethtool::{self, Statistics},
     ip,
     native::SudoExecutor,
@@ -115,7 +114,7 @@ fn traffic_context(
     config: &Config,
     shell: &mut impl CommandExecutor,
     partner: &mut impl CommandExecutor,
-) -> Result<TrafficContext, Error> {
+) -> Result<TrafficContext, UnrecoverableError> {
     let adapter = &config.adapter;
     let mac_addr = ip::mac_address(shell, adapter)?;
     let ip_addr = ip::ipv4_address(shell, adapter)?;
@@ -158,7 +157,7 @@ fn run_rtc_benchmark(
     shell: &mut impl CommandExecutor,
     partner: &mut SudoExecutor,
     competitive_egress: bool,
-) -> Result<BenchmarkResult, Error> {
+) -> Result<BenchmarkResult, UnrecoverableError> {
     const DURATION_SECS: u64 = 60;
 
     let startup_delay = 30;
@@ -215,7 +214,7 @@ fn run_rtc_benchmark(
     })
 }
 
-fn load_kernel_modules(shell: &mut impl CommandExecutor) -> Result<(), Error> {
+fn load_kernel_modules(shell: &mut impl CommandExecutor) -> Result<(), UnrecoverableError> {
     shell.cmd("modprobe sch_taprio")?;
     shell.cmd("modprobe sch_mqprio")?;
     shell.cmd("modprobe sch_etf")?;
@@ -227,7 +226,7 @@ fn setup_threaded_napi(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let interface = interface.as_ref();
 
     tracker.sysfs(shell, format!("/sys/class/net/{interface}/threaded"), "1")?;
@@ -250,7 +249,7 @@ fn napi_defer_hard_irqs(
     interface: impl AsRef<str>,
     cycle_time_ns: u64,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let interface = interface.as_ref();
 
     tracker.sysfs(
@@ -271,7 +270,7 @@ fn boost_irq_threads(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let interface = interface.as_ref();
 
     // let the updated threads fire up
@@ -295,7 +294,7 @@ fn igc_setup(
     interface: impl AsRef<str>,
     cycle_time_ns: u64,
     use_case: QdiscUseCase,
-) -> Result<UndoTracker, Error> {
+) -> Result<UndoTracker, UnrecoverableError> {
     let interface = interface.as_ref();
     let mut tracker = UndoTracker::new();
 
@@ -320,10 +319,10 @@ fn igc_setup(
 
     // TODO:igc currently uses hard coded cycle times and only supports taprio
     if cycle_time_ns != 1000000 {
-        return Err(Error::IO(io::Error::other("unsupported cycle time")));
+        return Err(UnrecoverableError::message("unsupported cycle time"));
     }
     if use_case != QdiscUseCase::Taprio {
-        return Err(Error::IO(io::Error::other("unsupported use case")));
+        return Err(UnrecoverableError::message("unsupported use case"));
     }
 
     // Tx Assignment with Qbv and full hardware offload: 20% RT, 80% non-RT.
@@ -399,7 +398,7 @@ fn stmmac_setup_egress_taprio(
     interface: &str,
     cycle_time_ns: u64,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     // In principle setting base-time to zero will be projected forward in
     // time and give the same base-time across everything sharing the same
     // PTP clock.
@@ -444,7 +443,7 @@ fn stmmac_setup_4q_egress_mqprio(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let qdisc = format!(
         concat!(
             "tc qdisc replace dev {} handle 100 parent root mqprio ",
@@ -476,7 +475,7 @@ fn stmmac_setup_5q_egress_mqprio(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let qdisc = format!(
         concat!(
             "tc qdisc replace dev {} handle 100 parent root mqprio ",
@@ -500,7 +499,7 @@ fn stmmac_setup_4q_egress_mqprio_cbs(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     // Queue #1 does not support CBS in hardware (hence "offload 0")
     let cbs = CbsConfig::new_with_bandwidth(2500000, 800000).unwrap();
     shell.cmd(format!(
@@ -553,7 +552,7 @@ fn stmmac_setup_5q_egress_mqprio_cbs(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let cbs = CbsConfig::new_with_bandwidth(2500000, 800000).unwrap();
     shell.cmd(format!(
         concat!(
@@ -607,7 +606,7 @@ fn stmmac_setup_4q_egress_mqprio_tbs(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     shell.cmd(format!(
         concat!(
             "tc qdisc replace dev {} parent 100:4 handle 104: etf ",
@@ -629,7 +628,7 @@ fn stmmac_setup_5q_egress_mqprio_tbs(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     shell.cmd(format!(
         concat!(
             "tc qdisc replace dev {} parent 100:5 handle 105: etf ",
@@ -656,7 +655,7 @@ fn stmmac_setup_4q_ingress_queue(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     // Rx Assignment is the same as Tx Assignment
     //               7  6  5  4  3  2  1  0 PTP LLDP
     let rx_queues = [1, 1, 1, 3, 2, 1, 1, 0, 1, 1];
@@ -697,7 +696,7 @@ struct ChannelSettings {
 fn stmmac_get_queue_count(
     shell: &mut impl CommandExecutor,
     interface: &str,
-) -> Result<ChannelSettings, Error> {
+) -> Result<ChannelSettings, UnrecoverableError> {
     let reply = shell.cmd(format!("ethtool --show-channels {interface}"))?;
     parse_channel_settings(&reply)
 }
@@ -708,7 +707,7 @@ fn stmmac_get_queue_count(
 /// The "Pre-set maximums" section is ignored. It uses the same keys as the
 /// current settings so parsing must not begin until the current settings
 /// header has been seen.
-fn parse_channel_settings(output: &str) -> Result<ChannelSettings, Error> {
+fn parse_channel_settings(output: &str) -> Result<ChannelSettings, UnrecoverableError> {
     let mut settings = ChannelSettings {
         rx: None,
         tx: None,
@@ -747,7 +746,7 @@ fn parse_channel_settings(output: &str) -> Result<ChannelSettings, Error> {
 
         let value = value.parse::<u32>().map_err(|_| {
             log::error!("Cannot parse ethtool --show-channels value: {line:?}");
-            io::Error::other("Cannot parse ethtool --show-channels output")
+            UnrecoverableError::message("Cannot parse ethtool --show-channels output")
         })?;
 
         match key.trim() {
@@ -761,9 +760,9 @@ fn parse_channel_settings(output: &str) -> Result<ChannelSettings, Error> {
 
     if !current_settings {
         log::error!("ethtool --show-channels output has no current settings: {output:?}");
-        return Err(
-            io::Error::other("ethtool --show-channels output has no current settings").into(),
-        );
+        return Err(UnrecoverableError::message(
+            "ethtool --show-channels output has no current settings",
+        ));
     }
 
     Ok(settings)
@@ -774,7 +773,7 @@ fn stmmac_setup(
     interface: impl AsRef<str>,
     cycle_time_ns: u64,
     use_case: QdiscUseCase,
-) -> Result<UndoTracker, Error> {
+) -> Result<UndoTracker, UnrecoverableError> {
     let interface = interface.as_ref();
     let mut tracker = UndoTracker::new();
 
@@ -840,7 +839,7 @@ pub fn mac_setup(
     interface: impl AsRef<str>,
     cycle_time_ns: u64,
     use_case: QdiscUseCase,
-) -> Result<UndoTracker, Error> {
+) -> Result<UndoTracker, UnrecoverableError> {
     let interface = interface.as_ref();
     let connection = shell.connection();
     log::debug!("Setting up {interface} via {connection} connection");
@@ -858,7 +857,7 @@ pub fn ptp_setup(
     shell: &mut impl CommandExecutor,
     interface: impl AsRef<str>,
     role: PtpRole,
-) -> Result<UndoTracker, Error> {
+) -> Result<UndoTracker, UnrecoverableError> {
     let interface = interface.as_ref();
     let connection = shell.connection();
     log::debug!("Setting up PTP for the {connection} connection");
@@ -937,7 +936,7 @@ pub fn ptp_setup(
 ///
 /// PTP is considered settled once we have seen five consecutive one-second
 /// samples where `offsetFromMaster` is within ±100 ns.
-fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), Error> {
+fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), UnrecoverableError> {
     const OFFSET_LIMIT_NS: f64 = 100.0;
     const REQUIRED_CONSECUTIVE_SAMPLES: u32 = 5;
     const TIMEOUT: Duration = Duration::from_secs(300);
@@ -952,9 +951,9 @@ fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), Error> {
     loop {
         let elapsed = start.elapsed();
         if elapsed >= TIMEOUT {
-            return Err(Error::IO(io::Error::other(
+            return Err(UnrecoverableError::message(
                 "timed out waiting for PTP to settle",
-            )));
+            ));
         }
 
         let total_secs = elapsed.as_secs();
@@ -985,7 +984,9 @@ fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), Error> {
 }
 
 /// Query the DUT's PTP client for `offsetFromMaster`, in nanoseconds.
-fn ptp_offset_from_master(shell: &mut impl CommandExecutor) -> Result<Option<f64>, Error> {
+fn ptp_offset_from_master(
+    shell: &mut impl CommandExecutor,
+) -> Result<Option<f64>, UnrecoverableError> {
     let output = shell.cmd("sudo pmc -u -b 0 -t 1 'GET CURRENT_DATA_SET'")?;
     Ok(parse_ptp_offset_from_master(&output))
 }
@@ -1008,14 +1009,16 @@ pub fn tsn_setup(
     cycle_time_ns: u64,
     use_case: QdiscUseCase,
     ptp: PtpMode,
-) -> Result<(TrafficContext, UndoTracker, UndoTracker), Error> {
+) -> Result<(TrafficContext, UndoTracker, UndoTracker), UnrecoverableError> {
     let channel_settings = stmmac_get_queue_count(shell, &config.adapter)?;
     let tx = channel_settings.tx.unwrap_or(1);
     if tx < 5
         && (use_case == QdiscUseCase::MqprioAndCbsWith5Queues
             || use_case == QdiscUseCase::MqprioAndEtfWith5Queues)
     {
-        return Err(io::Error::other("adapter must have at least 5 TX queues").into());
+        return Err(UnrecoverableError::message(
+            "adapter must have at least 5 TX queues",
+        ));
     }
 
     let context = traffic_context(config, shell, partner)?;
@@ -1060,7 +1063,7 @@ fn config_cyclic_only(
     shell: &mut impl CommandExecutor,
     partner: &mut impl CommandExecutor,
     cycle_time_ns: u64,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let rtc = TrafficClass::rtc()
         //.set_xdp(false, true, true)
         .set_vid(100)
@@ -1130,7 +1133,7 @@ fn config_cyclic_only(
 pub fn profinet_cyclic_only(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let cycle_time_ns = 1_000_000;
     let mut failures = 0;
 
@@ -1179,7 +1182,7 @@ fn config_profinet_rt(
     partner: &mut impl CommandExecutor,
     cycle_time_ns: u64,
     xdp_mode: XdpMode,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let mut rtc = TrafficClass::rtc()
         .set_vid(100)
         .set_frame_count_and_length(32, 128)
@@ -1286,7 +1289,10 @@ fn config_profinet_rt(
     Ok(())
 }
 
-pub fn profinet_rt_nop(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn profinet_rt_nop(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let cycle_time_ns = 1_000_000;
 
     let mut executor = SudoExecutor::new();
@@ -1308,7 +1314,7 @@ pub fn profinet_rt_nop(config: &Config, shell: &mut impl CommandExecutor) -> Res
 pub fn profinet_rt_mqprio_xdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let cycle_time_ns = 1_000_000;
 
     let mut executor = SudoExecutor::new();
@@ -1340,7 +1346,7 @@ pub fn profinet_rt_mqprio_xdp(
 pub fn profinet_rt_mqprio_noxdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let cycle_time_ns = 1_000_000;
 
     let mut executor = SudoExecutor::new();
@@ -1371,7 +1377,7 @@ pub fn profinet_rt_mqprio_noxdp(
 pub fn profinet_rt_mqprio_and_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let cycle_time_ns = 1_000_000;
 
     let mut executor = SudoExecutor::new();
@@ -1399,7 +1405,10 @@ pub fn profinet_rt_mqprio_and_cbs(
     Ok(0)
 }
 
-pub fn profinet_rt_taprio(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn profinet_rt_taprio(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let cycle_time_ns = 1_000_000;
 
     let mut executor = SudoExecutor::new();
@@ -1505,7 +1514,7 @@ fn netperf_pair(
     config: &Config,
     shell: &mut impl CommandExecutor,
     use_case: Option<QdiscUseCase>,
-) -> Result<(f64, f64), Error> {
+) -> Result<(f64, f64), UnrecoverableError> {
     const DURATION_UDP_HIGH: u64 = 10;
     const DURATION_RTC: u64 = DURATION_UDP_HIGH + 2;
 
@@ -1569,7 +1578,10 @@ fn netperf_pair(
 /// We expect both streams to achieve similar bandwidth but with the "high"
 /// priority stream achieving more throughput because it has no competition
 /// for two seconds of its runtime.
-pub fn netperf_pair_nop(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn netperf_pair_nop(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = netperf_pair(config, shell, None)?;
 
     let mut failures = 0;
@@ -1603,7 +1615,7 @@ pub fn netperf_pair_nop(config: &Config, shell: &mut impl CommandExecutor) -> Re
 pub fn netperf_pair_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::Taprio))?;
 
     let mut failures = 0;
@@ -1632,7 +1644,7 @@ pub fn netperf_pair_taprio(
 pub fn netperf_pair_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::Mqprio))?;
 
     let mut failures = 0;
@@ -1667,7 +1679,7 @@ pub fn netperf_pair_mqprio(
 pub fn netperf_pair_mqprio_and_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbs))?;
 
     let mut failures = 0;
@@ -1696,7 +1708,7 @@ pub fn netperf_pair_mqprio_and_cbs(
 pub fn netperf_pair_mqprio_and_cbs_with_5_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues))?;
 
     let mut failures = 0;
@@ -1723,7 +1735,7 @@ fn netperf_quad(
     config: &Config,
     shell: &mut impl CommandExecutor,
     use_case: Option<QdiscUseCase>,
-) -> Result<(f64, f64, f64, f64), Error> {
+) -> Result<(f64, f64, f64, f64), UnrecoverableError> {
     const DURATION_UDP_LOW: u64 = 10;
     const DURATION_UDP_HIGH: u64 = DURATION_UDP_LOW + 2;
     const DURATION_RTA: u64 = DURATION_UDP_HIGH + 2;
@@ -1799,7 +1811,10 @@ fn netperf_quad(
     Ok(priorities)
 }
 
-pub fn netperf_quad_nop(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Error> {
+pub fn netperf_quad_nop(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
     const DURATION_SECS: f64 = 300.0;
 
     const T: f64 = 2500.0 * 1.2;
@@ -1838,7 +1853,7 @@ pub fn netperf_quad_nop(config: &Config, shell: &mut impl CommandExecutor) -> Re
 pub fn netperf_quad_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, Some(QdiscUseCase::Taprio))?;
 
     let mut failures = 0;
@@ -1869,7 +1884,7 @@ pub fn netperf_quad_taprio(
 pub fn netperf_quad_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, Some(QdiscUseCase::Mqprio))?;
 
     let mut failures = 0;
@@ -1900,7 +1915,7 @@ pub fn netperf_quad_mqprio(
 pub fn netperf_quad_mqprio_and_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (rtc, rta, udp_high, _) = netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbs))?;
 
     let mut failures = 0;
@@ -1926,7 +1941,7 @@ pub fn netperf_quad_mqprio_and_cbs(
 pub fn netperf_quad_mqprio_and_cbs_with_5_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let (rtc, rta, udp_high, _) =
         netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues))?;
 
@@ -1954,7 +1969,7 @@ fn txrx_tsn(
     config: &Config,
     shell: &mut impl CommandExecutor,
     use_case: QdiscUseCase,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
@@ -2041,14 +2056,14 @@ fn txrx_tsn(
 pub fn txrx_tsn_mqprio_and_etf(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtf)
 }
 
 pub fn txrx_tsn_mqprio_and_etf_with_5_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, Error> {
+) -> Result<u32, UnrecoverableError> {
     txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtfWith5Queues)
 }
 

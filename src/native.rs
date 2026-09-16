@@ -1,8 +1,8 @@
-use std::{ffi::OsString, io, process::Command, time::Duration};
+use std::{ffi::OsString, process::Command, time::Duration};
 
-use expectrl::{Eof, Error, Expect, Session};
+use expectrl::{Eof, Expect, Session};
 
-use crate::{CommandExecutor, CommandExecutorConnection, SessionExt};
+use crate::{CommandExecutor, CommandExecutorConnection, SessionExt, UnrecoverableError};
 
 pub struct NativeExecutor {
     pub timeout: Option<Duration>,
@@ -17,13 +17,15 @@ impl NativeExecutor {
         }
     }
 
-    pub fn load_module(&mut self, module_name: &str) -> Result<(), Error> {
+    pub fn load_module(&mut self, module_name: &str) -> Result<(), UnrecoverableError> {
         let lsmod = self.cmd("lsmod")?;
 
         if !lsmod.contains(module_name) {
             // Check for incompatible module state
             if module_name.contains("tc956x") && lsmod.contains("tc956x") {
-                return Err(io::Error::other("Incorrect module is already loaded").into());
+                return Err(UnrecoverableError::message(
+                    "Incorrect module is already loaded",
+                ));
             }
 
             self.cmd(format!("modprobe {module_name}"))?;
@@ -34,7 +36,7 @@ impl NativeExecutor {
 }
 
 impl CommandExecutor for NativeExecutor {
-    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
+    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, UnrecoverableError> {
         log::info!(">>> {}", cmd.as_ref());
         let mut sh = Command::new("bash");
         sh.arg("-c");
@@ -68,7 +70,7 @@ impl CommandExecutor for NativeExecutor {
             }
             Err(e) => {
                 self.available = p.try_read_to_string();
-                Err(e)
+                Err(e.into())
             }
         }
     }
@@ -103,13 +105,15 @@ impl SudoExecutor {
         }
     }
 
-    pub fn load_module(&mut self, module_name: &str) -> Result<(), Error> {
+    pub fn load_module(&mut self, module_name: &str) -> Result<(), UnrecoverableError> {
         let lsmod = self.cmd("lsmod")?;
 
         if !lsmod.contains(module_name) {
             // Check for incompatible module state
             if module_name.contains("tc956x") && lsmod.contains("tc956x") {
-                return Err(io::Error::other("Incorrect module is already loaded").into());
+                return Err(UnrecoverableError::message(
+                    "Incorrect module is already loaded",
+                ));
             }
 
             self.cmd(format!("modprobe {module_name}"))?;
@@ -120,7 +124,7 @@ impl SudoExecutor {
 }
 
 impl CommandExecutor for SudoExecutor {
-    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error> {
+    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, UnrecoverableError> {
         let cmd = cmd.as_ref();
         if cmd.starts_with("echo ")
             && let Some((left, right)) = cmd.split_once(" > ")

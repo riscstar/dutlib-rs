@@ -1,9 +1,7 @@
-use std::{io, thread, time::Duration};
-
-use expectrl::Error;
+use std::{thread, time::Duration};
 
 use crate::{
-    CommandExecutor,
+    CommandExecutor, UnrecoverableError,
     ethtool::{self, AdapterInfo},
 };
 
@@ -13,7 +11,7 @@ pub fn cmd(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     command: &str,
-) -> Result<String, Error> {
+) -> Result<String, UnrecoverableError> {
     shell.cmd(format!("ip -color=never {command}").replace("<ADAPTER>", adapter))
 }
 
@@ -23,7 +21,7 @@ pub fn cmd_and_wait_link_up(
     shell: &mut impl CommandExecutor,
     adapter: &str,
     command: &str,
-) -> Result<Option<AdapterInfo>, Error> {
+) -> Result<Option<AdapterInfo>, UnrecoverableError> {
     cmd(shell, adapter, command)?;
 
     // We assume the above command will cause the PHY to renegotiate. Let's
@@ -35,7 +33,10 @@ pub fn cmd_and_wait_link_up(
 }
 
 /// Helper function to lookup our MAC address
-pub fn mac_address(shell: &mut impl CommandExecutor, adapter: &str) -> Result<String, Error> {
+pub fn mac_address(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+) -> Result<String, UnrecoverableError> {
     let reply = cmd(shell, adapter, "link show <ADAPTER>")?;
 
     let mut trigger = false;
@@ -49,11 +50,16 @@ pub fn mac_address(shell: &mut impl CommandExecutor, adapter: &str) -> Result<St
         }
     }
 
-    Err(io::Error::other("Unexpected output from `ip link`").into())
+    Err(UnrecoverableError::message(
+        "Unexpected output from `ip link`",
+    ))
 }
 
 /// Helper function to lookup our MAC address
-pub fn ipv4_address(shell: &mut impl CommandExecutor, adapter: &str) -> Result<String, Error> {
+pub fn ipv4_address(
+    shell: &mut impl CommandExecutor,
+    adapter: &str,
+) -> Result<String, UnrecoverableError> {
     let reply = cmd(shell, adapter, "-4 addr show <ADAPTER>")?;
 
     let mut trigger = false;
@@ -70,5 +76,7 @@ pub fn ipv4_address(shell: &mut impl CommandExecutor, adapter: &str) -> Result<S
         }
     }
 
-    Err(io::Error::other("Unexpected output from `ip addr`").into())
+    Err(UnrecoverableError::message(
+        "Unexpected output from `ip addr`",
+    ))
 }

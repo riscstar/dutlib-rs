@@ -1,8 +1,6 @@
-use expectrl::Error;
+use crate::{CommandExecutor, Config, UnrecoverableError, tests, tsn_tests, tuning};
 
-use crate::{CommandExecutor, Config, tests, tsn_tests, tuning};
-
-type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, Error>;
+type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, UnrecoverableError>;
 
 /// The common `--select` command line arguments shared by the test
 /// executables.
@@ -53,7 +51,12 @@ impl<T: CommandExecutor> TestCase<T> {
         Self { name, code }
     }
 
-    pub fn run(&self, config: &Config, shell: &mut T, path: &str) -> Result<u32, Error> {
+    pub fn run(
+        &self,
+        config: &Config,
+        shell: &mut T,
+        path: &str,
+    ) -> Result<u32, UnrecoverableError> {
         let name = self.name;
         log::info!("RUNNING: {path}/{name}");
         match (self.code)(config, shell) {
@@ -164,7 +167,12 @@ impl<T: CommandExecutor> TestPlan<T> {
         }
     }
 
-    pub fn run_with_path(&self, config: &Config, shell: &mut T, path: &str) -> Result<u32, Error> {
+    pub fn run_with_path(
+        &self,
+        config: &Config,
+        shell: &mut T,
+        path: &str,
+    ) -> Result<u32, UnrecoverableError> {
         let name = if path.is_empty() || path.ends_with("/") {
             format!("{}{}", path, self.name)
         } else {
@@ -186,7 +194,7 @@ impl<T: CommandExecutor> TestPlan<T> {
         Ok(failures)
     }
 
-    pub fn run(&self, config: &Config, shell: &mut T) -> Result<u32, Error> {
+    pub fn run(&self, config: &Config, shell: &mut T) -> Result<u32, UnrecoverableError> {
         log::info!("TUNING: Automatically applying system tuning");
         tuning::autotune(config, shell)?;
 

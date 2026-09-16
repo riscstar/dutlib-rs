@@ -1,13 +1,8 @@
-use std::{
-    collections::BTreeMap,
-    fmt,
-    fs::File,
-    io::{self, BufWriter},
-    path::Path,
-};
+use std::{collections::BTreeMap, fmt, fs::File, io::BufWriter, path::Path};
 
-use expectrl::Error;
 use serde::{Deserialize, Serialize};
+
+use crate::UnrecoverableError;
 
 type YamlValue = serde_yaml::Value;
 
@@ -34,11 +29,11 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn to_file(&self, path: impl AsRef<Path>) -> Result<(), Error> {
+    pub fn to_file(&self, path: impl AsRef<Path>) -> Result<(), UnrecoverableError> {
         let file = File::create(path)?;
         let writer = BufWriter::new(file);
         serde_yaml::to_writer(writer, self)
-            .map_err(|_| io::Error::other("Failed to write YAML file"))?;
+            .map_err(|_| UnrecoverableError::message("Failed to write YAML file"))?;
 
         Ok(())
     }

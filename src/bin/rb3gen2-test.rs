@@ -1,13 +1,9 @@
-use std::{
-    io::{self, ErrorKind},
-    process::{self, Command},
-};
+use std::process::{self, Command};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use expectrl::Error;
 
 use dutlib::{
-    CommandExecutor, Config,
+    CommandExecutor, Config, UnrecoverableError, UnrecoverableErrorKind,
     native::{NativeExecutor, SudoExecutor},
     plans::{self, Selection, TestPlan},
     read_config, tests,
@@ -103,7 +99,7 @@ fn all_test_plans() -> TestPlan<NativeExecutor> {
     plan
 }
 
-fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
+fn cycle(config: Config, args: CycleCli) -> Result<(), UnrecoverableError> {
     let all_plans = all_test_plans();
     let mut plan = None;
     for candidate in all_plans.into_iter() {
@@ -145,7 +141,9 @@ fn cycle(config: Config, args: CycleCli) -> Result<(), Error> {
         } else if bad == 0 {
             log::info!("Successfully completed {good} iterations");
         } else {
-            return Err(io::Error::other(format!("FAILED after {good} iterations")).into());
+            return Err(UnrecoverableError::message(format!(
+                "FAILED after {good} iterations"
+            )));
         }
     }
 
@@ -162,7 +160,7 @@ fn run_test(
     config: Config,
     args: RunTestCli,
     test_plan: TestPlan<NativeExecutor>,
-) -> Result<(), Error> {
+) -> Result<(), UnrecoverableError> {
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&config.module)?;
@@ -173,9 +171,10 @@ fn run_test(
 
     match test_plan.run(&config, &mut shell) {
         Ok(0) => Ok(()),
-        Ok(n) => {
-            Err(io::Error::other(format!("{} reported {n} failures", test_plan.name())).into())
-        }
+        Ok(n) => Err(UnrecoverableError::message(format!(
+            "{} reported {n} failures",
+            test_plan.name()
+        ))),
         Err(e) => {
             log::info!("Debug info: {:?}", shell.try_read_to_string());
             Err(e)
@@ -207,7 +206,7 @@ pub struct TsnCli {
     no_autotune: bool,
 }
 
-fn setup_tsn(config: Config, args: TsnCli) -> Result<(), Error> {
+fn setup_tsn(config: Config, args: TsnCli) -> Result<(), UnrecoverableError> {
     let mut shell = SudoExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&config.module)?;
@@ -239,7 +238,7 @@ fn setup_tsn(config: Config, args: TsnCli) -> Result<(), Error> {
     Ok(())
 }
 
-fn app() -> Result<(), Error> {
+fn app() -> Result<(), UnrecoverableError> {
     let mut cli = Cli::parse();
 
     let levels = [
@@ -306,19 +305,15 @@ fn app() -> Result<(), Error> {
 }
 
 fn main() {
-    match app() {
-        Ok(()) => {}
-        Err(Error::IO(e)) if e.kind() == ErrorKind::Other => {
-            log::error!("{e}");
-            process::exit(1);
-        }
-        Err(Error::IO(e)) => {
-            log::error!("IO error: {e}");
-            process::exit(2);
-        }
-        Err(e) => {
-            log::error!("{e}");
-            process::exit(3);
-        }
-    }
+    let Err(e) = app() else {
+        return;
+    };
+
+    log::error!("{e:?}");
+
+    process::exit(match e.kind() {
+        UnrecoverableErrorKind::Message(_) => 1,
+        UnrecoverableErrorKind::Io(_) => 2,
+        _ => 3,
+    });
 }

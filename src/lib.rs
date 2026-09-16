@@ -1,13 +1,10 @@
-use std::{
-    fs,
-    io::{self, Read},
-    path::Path,
-};
+use std::{fs, io::Read, path::Path};
 
-use expectrl::{Error, Session, process::NonBlocking};
+use expectrl::{Session, process::NonBlocking};
 use serde::{Deserialize, Serialize};
 
 pub mod dut;
+pub mod error;
 pub mod ethtool;
 pub mod ip;
 pub mod native;
@@ -18,6 +15,8 @@ pub mod tests;
 pub mod tracker;
 pub mod tsn_tests;
 pub mod tuning;
+
+pub use error::{UnrecoverableError, UnrecoverableErrorKind};
 
 /// The type of connection used by a [`CommandExecutor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +50,7 @@ pub trait CommandExecutor {
     /// 2. Output is cleaned up to remove some escape sequences and to replace
     ///    \r\n with plain \n
     /// 3. Output if returned as a `String`
-    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, Error>;
+    fn cmd<C: AsRef<str>>(&mut self, cmd: C) -> Result<String, UnrecoverableError>;
 
     /// Return the type of the session (e.g. "dut", "native", "sudo").
     fn connection(&self) -> CommandExecutorConnection;
@@ -123,16 +122,17 @@ pub struct Config {
     pub no_autotune: bool,
 }
 
-pub fn read_config(board: Option<&str>) -> Result<Config, io::Error> {
-    let home =
-        std::env::var_os("HOME").ok_or_else(|| io::Error::other("No HOME in environment"))?;
+pub fn read_config(board: Option<&str>) -> Result<Config, UnrecoverableError> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| UnrecoverableError::message("No HOME in environment"))?;
     let board = board.unwrap_or("rb3gen2");
 
     let config_file = Path::new(&home)
         .join(".dutlib")
         .join(format!("{board}.toml"));
     let config = fs::read_to_string(config_file)?;
-    let config = toml::from_str(&config).map_err(|e| io::Error::other(format!("{e}")))?;
+    let config =
+        toml::from_str(&config).map_err(|e| UnrecoverableError::message(format!("{e}")))?;
 
     Ok(config)
 }

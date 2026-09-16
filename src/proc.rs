@@ -3,9 +3,7 @@ use std::fmt;
 use std::io;
 use std::ops::{Index, Sub};
 
-use expectrl::Error;
-
-use crate::CommandExecutor;
+use crate::{CommandExecutor, UnrecoverableError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Irq {
@@ -205,13 +203,14 @@ impl<'a, 'b> Sub<&'b Interrupts> for &'a Interrupts {
     }
 }
 
-pub fn interrupts(shell: &mut impl CommandExecutor) -> Result<Interrupts, Error> {
+pub fn interrupts(shell: &mut impl CommandExecutor) -> Result<Interrupts, UnrecoverableError> {
     let output = shell.cmd("cat /proc/interrupts")?;
     Interrupts::new(&output).ok_or_else(|| {
-        Error::IO(io::Error::new(
+        io::Error::new(
             io::ErrorKind::InvalidData,
             "Failed to parse /proc/interrupts",
-        ))
+        )
+        .into()
     })
 }
 
