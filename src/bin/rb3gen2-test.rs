@@ -12,6 +12,7 @@ use dutlib::{
     plans::{self, Selection, TestPlan},
     read_config, tests,
     tsn_tests::{self, PtpRole},
+    tuning,
 };
 
 #[derive(Debug, Parser)]
@@ -200,6 +201,10 @@ pub struct TsnCli {
     /// Adopt the specified qdisc use case (default: taprio)
     #[arg(short, long, default_value = "taprio")]
     qdisc: tsn_tests::QdiscUseCase,
+
+    /// Skip automatic platform tuning when setting up the use-case
+    #[arg(short, long)]
+    no_autotune: bool,
 }
 
 fn setup_tsn(config: Config, args: TsnCli) -> Result<(), Error> {
@@ -218,6 +223,10 @@ fn setup_tsn(config: Config, args: TsnCli) -> Result<(), Error> {
     } else {
         PtpRole::Slave
     };
+
+    if !args.no_autotune {
+        tuning::autotune(&config, &mut shell)?;
+    }
 
     let mut undo = tsn_tests::mac_setup(&mut shell, interface, 1000000, args.qdisc)?;
     undo.append(tsn_tests::ptp_setup(&mut shell, interface, role)?);
