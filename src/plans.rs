@@ -348,26 +348,27 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("tsn-test");
 
     test_case!(plan, tsn_tests::netperf_pair_nop);
-    test_case!(plan, tsn_tests::netperf_pair_taprio);
-    test_case!(plan, tsn_tests::netperf_pair_mqprio);
-    test_case!(plan, tsn_tests::netperf_pair_mqprio_and_cbs);
-    test_case!(plan, tsn_tests::netperf_pair_mqprio_and_cbs_with_5_queues);
+    test_case!(plan, tsn_tests::netperf_pair_4q_taprio);
+    test_case!(plan, tsn_tests::netperf_pair_4q_mqprio);
+    test_case!(plan, tsn_tests::netperf_pair_4q_cbs);
+    test_case!(plan, tsn_tests::netperf_pair_5q_cbs);
 
     test_case!(plan, tsn_tests::netperf_quad_nop);
-    test_case!(plan, tsn_tests::netperf_quad_taprio);
-    test_case!(plan, tsn_tests::netperf_quad_mqprio);
-    test_case!(plan, tsn_tests::netperf_quad_mqprio_and_cbs);
-    test_case!(plan, tsn_tests::netperf_quad_mqprio_and_cbs_with_5_queues);
+    test_case!(plan, tsn_tests::netperf_quad_4q_taprio);
+    test_case!(plan, tsn_tests::netperf_quad_4q_mqprio);
+    test_case!(plan, tsn_tests::netperf_quad_4q_cbs);
+    test_case!(plan, tsn_tests::netperf_quad_5q_cbs);
 
     test_case!(plan, tsn_tests::profinet_rt_nop);
-    test_case!(plan, tsn_tests::profinet_rt_taprio);
-    test_case!(plan, tsn_tests::profinet_cyclic_only);
-    test_case!(plan, tsn_tests::profinet_rt_mqprio_xdp);
-    test_case!(plan, tsn_tests::profinet_rt_mqprio_noxdp);
-    test_case!(plan, tsn_tests::profinet_rt_mqprio_and_cbs);
+    test_case!(plan, tsn_tests::profinet_rt_4q_taprio);
+    test_case!(plan, tsn_tests::profinet_cyclic_4q_taprio);
+    test_case!(plan, tsn_tests::profinet_rt_4q_mqprio_xdp);
+    test_case!(plan, tsn_tests::profinet_rt_4q_mqprio_noxdp);
+    test_case!(plan, tsn_tests::profinet_rt_4q_cbs);
+    test_case!(plan, tsn_tests::profinet_rt_5q_cbs);
 
-    test_case!(plan, tsn_tests::txrx_tsn_mqprio_and_etf);
-    test_case!(plan, tsn_tests::txrx_tsn_mqprio_and_etf_with_5_queues);
+    test_case!(plan, tsn_tests::txrx_tsn_4q_etf);
+    test_case!(plan, tsn_tests::txrx_tsn_5q_tbs);
 
     plan
 }

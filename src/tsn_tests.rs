@@ -1205,7 +1205,7 @@ fn config_cyclic_only(
     Ok(())
 }
 
-pub fn profinet_cyclic_only(
+pub fn profinet_cyclic_4q_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1389,7 +1389,42 @@ pub fn profinet_rt_nop(
     Ok(0)
 }
 
-pub fn profinet_rt_mqprio_xdp(
+pub fn profinet_rt_4q_taprio(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let cycle_time_ns = 1_000_000;
+
+    let mut executor = SudoExecutor::new();
+    let partner = &mut executor;
+
+    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
+        tsn_setup(
+            config,
+            shell,
+            partner,
+            cycle_time_ns,
+            QdiscUseCase::Taprio,
+            PtpMode::Enabled,
+        ),
+        "profinet_rt_taprio",
+    )?;
+
+    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
+
+    let benchmark = run_rtc_benchmark(config, shell, partner, false)?;
+
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
+    benchmark.log();
+
+    Ok(0)
+}
+
+pub fn profinet_rt_4q_mqprio_xdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1424,7 +1459,7 @@ pub fn profinet_rt_mqprio_xdp(
     Ok(0)
 }
 
-pub fn profinet_rt_mqprio_noxdp(
+pub fn profinet_rt_4q_mqprio_noxdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1458,7 +1493,7 @@ pub fn profinet_rt_mqprio_noxdp(
     Ok(0)
 }
 
-pub fn profinet_rt_mqprio_and_cbs(
+pub fn profinet_rt_4q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1492,7 +1527,7 @@ pub fn profinet_rt_mqprio_and_cbs(
     Ok(0)
 }
 
-pub fn profinet_rt_taprio(
+pub fn profinet_rt_5q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1507,16 +1542,15 @@ pub fn profinet_rt_taprio(
             shell,
             partner,
             cycle_time_ns,
-            QdiscUseCase::Taprio,
+            QdiscUseCase::MqprioAndCbs,
             PtpMode::Enabled,
         ),
-        "profinet_rt_taprio",
+        "profinet_rt_mqprio_and_cbs",
     )?;
 
-    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
+    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
 
-    let benchmark = run_rtc_benchmark(config, shell, partner, false)?;
-
+    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
     partner_teardown.restore(partner)?;
     shell_teardown.restore(shell)?;
 
@@ -1702,7 +1736,7 @@ pub fn netperf_pair_nop(
 /// share a gate. Based in the taprio configuration (above) the high
 /// priority stream should receive approximately 10% of the bandwidth,
 /// while the low priority stream should get 40%.
-pub fn netperf_pair_taprio(
+pub fn netperf_pair_4q_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1734,7 +1768,7 @@ pub fn netperf_pair_taprio(
 ///
 /// The two streams are competing head on and the higher priority stream should
 /// get massively more bandwidth than the other.
-pub fn netperf_pair_mqprio(
+pub fn netperf_pair_4q_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1772,7 +1806,7 @@ pub fn netperf_pair_mqprio(
 /// hardware offloading for CBS. The low priority stream is on a queue that does
 /// not support hardware offload and therefore has a relaxed lower bandwidth
 /// limit (since software CBS performance can be unpredictable).
-pub fn netperf_pair_mqprio_and_cbs(
+pub fn netperf_pair_4q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1804,7 +1838,7 @@ pub fn netperf_pair_mqprio_and_cbs(
 ///
 /// This allows queue 1 to 3 (where queue 1 has no hardware CBS support) to be
 /// replaced with queue 2 to 4 (all of which have hardware CBS support).
-pub fn netperf_pair_mqprio_and_cbs_with_5_queues(
+pub fn netperf_pair_5q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1956,7 +1990,7 @@ pub fn netperf_quad_nop(
 
     Ok(failures)
 }
-pub fn netperf_quad_taprio(
+pub fn netperf_quad_4q_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -1990,7 +2024,7 @@ pub fn netperf_quad_taprio(
     Ok(failures)
 }
 
-pub fn netperf_quad_mqprio(
+pub fn netperf_quad_4q_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -2024,7 +2058,7 @@ pub fn netperf_quad_mqprio(
     Ok(failures)
 }
 
-pub fn netperf_quad_mqprio_and_cbs(
+pub fn netperf_quad_4q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -2053,7 +2087,7 @@ pub fn netperf_quad_mqprio_and_cbs(
     Ok(failures)
 }
 
-pub fn netperf_quad_mqprio_and_cbs_with_5_queues(
+pub fn netperf_quad_5q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -2155,7 +2189,7 @@ fn txrx_tsn(
     Ok(stats)
 }
 
-pub fn txrx_tsn_mqprio_and_etf(
+pub fn txrx_tsn_4q_etf(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
@@ -2196,7 +2230,7 @@ pub fn txrx_tsn_mqprio_and_etf(
     Ok(failures)
 }
 
-pub fn txrx_tsn_mqprio_and_etf_with_5_queues(
+pub fn txrx_tsn_5q_tbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
