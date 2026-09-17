@@ -2,6 +2,31 @@ use crate::{CommandExecutor, Config, UnrecoverableError, tests, tsn_tests, tunin
 
 type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, UnrecoverableError>;
 
+/// Derive a test label from the path of the function implementing it.
+///
+/// The label is the final segment of the path, so `tests::iperf3_bidir`
+/// becomes `"iperf3_bidir"`. Tying the label to the function path means a
+/// global rename of the function updates the label too, rather than leaving a
+/// stale string literal behind.
+macro_rules! test_name {
+    ($prefix:ident :: $($rest:ident)::+) => {
+        test_name!($($rest)::+)
+    };
+    ($name:ident) => {
+        stringify!($name)
+    };
+}
+
+/// Add a test case to a plan, deriving the label from the function's path.
+///
+/// `test_case!(plan, tests::iperf3_bidir)` is equivalent to
+/// `plan.test_case("iperf3_bidir", tests::iperf3_bidir)`.
+macro_rules! test_case {
+    ($plan:ident, $($path:ident)::+) => {
+        $plan.test_case(test_name!($($path)::+), $($path)::+);
+    };
+}
+
 /// The common `--select` command line arguments shared by the test
 /// executables.
 ///
@@ -205,12 +230,12 @@ impl<T: CommandExecutor> TestPlan<T> {
 pub fn smoke_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("smoke-test");
 
-    plan.test_case("ping", tests::ping);
-    plan.test_case("iperf3_bidir", tests::iperf3_bidir);
-    plan.test_case("iperf3_tx", tests::iperf3_tx);
-    plan.test_case("iperf3_rx", tests::iperf3_rx);
-    plan.test_case("ethtool_selftest", tests::ethtool_selftest);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::ping);
+    test_case!(plan, tests::iperf3_bidir);
+    test_case!(plan, tests::iperf3_tx);
+    test_case!(plan, tests::iperf3_rx);
+    test_case!(plan, tests::ethtool_selftest);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -218,10 +243,10 @@ pub fn smoke_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn functional_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("functional-test");
 
-    plan.test_case("scp_bidir", tests::scp_bidir);
-    plan.test_case("scp_tx", tests::scp_tx);
-    plan.test_case("scp_rx", tests::scp_rx);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::scp_bidir);
+    test_case!(plan, tests::scp_tx);
+    test_case!(plan, tests::scp_rx);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -229,16 +254,16 @@ pub fn functional_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn bandwidth_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("bandwidth-test");
 
-    plan.test_case("iperf3_intervals_bidir", tests::iperf3_intervals_bidir);
-    plan.test_case("iperf3_intervals_tx", tests::iperf3_intervals_tx);
-    plan.test_case("iperf3_intervals_rx", tests::iperf3_intervals_rx);
-    plan.test_case("iperf3_udp_bidir", tests::iperf3_udp_bidir);
-    plan.test_case("iperf3_udp_tx", tests::iperf3_udp_tx);
-    plan.test_case("iperf3_udp_rx", tests::iperf3_udp_rx);
-    plan.test_case("iperf3_x16_bidir", tests::iperf3_x16_bidir);
-    plan.test_case("iperf3_x16_tx", tests::iperf3_x16_tx);
-    plan.test_case("iperf3_x16_rx", tests::iperf3_x16_rx);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::iperf3_intervals_bidir);
+    test_case!(plan, tests::iperf3_intervals_tx);
+    test_case!(plan, tests::iperf3_intervals_rx);
+    test_case!(plan, tests::iperf3_udp_bidir);
+    test_case!(plan, tests::iperf3_udp_tx);
+    test_case!(plan, tests::iperf3_udp_rx);
+    test_case!(plan, tests::iperf3_x16_bidir);
+    test_case!(plan, tests::iperf3_x16_tx);
+    test_case!(plan, tests::iperf3_x16_rx);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -246,11 +271,11 @@ pub fn bandwidth_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn latency_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("latency-test");
 
-    plan.test_case("ping_1s", tests::ping_1s);
-    plan.test_case("ping_100ms", tests::ping_100ms);
-    plan.test_case("ping_10ms", tests::ping_10ms);
-    plan.test_case("ping_flood", tests::ping_flood);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::ping_1s);
+    test_case!(plan, tests::ping_100ms);
+    test_case!(plan, tests::ping_10ms);
+    test_case!(plan, tests::ping_flood);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -258,9 +283,9 @@ pub fn latency_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn quick_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("quick-test");
 
-    plan.test_case("ping", tests::ping);
-    plan.test_case("iperf3_bidir", tests::iperf3_bidir);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::ping);
+    test_case!(plan, tests::iperf3_bidir);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -268,40 +293,16 @@ pub fn quick_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn phy_an_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("phy-an-test");
 
-    plan.test_case(
-        "link_mode_and_partner_advertise_all",
-        tests::link_mode_and_partner_advertise_all,
-    );
-    plan.test_case(
-        "link_partner_advertise_1000baset_full",
-        tests::link_partner_advertise_1000baset_full,
-    );
-    plan.test_case(
-        "link_partner_advertise_100baset_full",
-        tests::link_partner_advertise_100baset_full,
-    );
-    plan.test_case(
-        "link_partner_advertise_10baset_full",
-        tests::link_partner_advertise_10baset_full,
-    );
-    plan.test_case(
-        "link_mode_advertise_1000baset_full",
-        tests::link_mode_advertise_1000baset_full,
-    );
-    plan.test_case(
-        "link_mode_advertise_100baset_full",
-        tests::link_mode_advertise_100baset_full,
-    );
-    plan.test_case(
-        "link_mode_advertise_10baset_full",
-        tests::link_mode_advertise_10baset_full,
-    );
+    test_case!(plan, tests::link_mode_and_partner_advertise_all);
+    test_case!(plan, tests::link_partner_advertise_1000baset_full);
+    test_case!(plan, tests::link_partner_advertise_100baset_full);
+    test_case!(plan, tests::link_partner_advertise_10baset_full);
+    test_case!(plan, tests::link_mode_advertise_1000baset_full);
+    test_case!(plan, tests::link_mode_advertise_100baset_full);
+    test_case!(plan, tests::link_mode_advertise_10baset_full);
     // Check that the previous tests didn't damage anything when returning to default
-    plan.test_case(
-        "link_mode_and_partner_advertise_all",
-        tests::link_mode_and_partner_advertise_all,
-    );
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::link_mode_and_partner_advertise_all);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -309,16 +310,10 @@ pub fn phy_an_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn phy_quick_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("phy-quick-test");
 
-    plan.test_case(
-        "link_mode_advertise_1000baset_full",
-        tests::link_mode_advertise_1000baset_full,
-    );
-    plan.test_case(
-        "link_mode_advertise_100baset_full",
-        tests::link_mode_advertise_100baset_full,
-    );
-    plan.test_case("link_mode_advertise_all", tests::link_mode_advertise_all);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::link_mode_advertise_1000baset_full);
+    test_case!(plan, tests::link_mode_advertise_100baset_full);
+    test_case!(plan, tests::link_mode_advertise_all);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -326,13 +321,13 @@ pub fn phy_quick_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn system_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("system-test");
 
-    plan.test_case("iperf3_udp_tx_all_queues", tests::iperf3_udp_tx_all_queues);
-    plan.test_case("suspend_resume", tests::suspend_resume);
-    plan.test_case("suspend_resume", tests::suspend_resume);
-    plan.test_case("disable_checksum_offload", tests::disable_checksum_offload);
-    plan.test_case("disable_tso", tests::disable_tso);
-    plan.test_case("eee", tests::eee);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::iperf3_udp_tx_all_queues);
+    test_case!(plan, tests::suspend_resume);
+    test_case!(plan, tests::suspend_resume);
+    test_case!(plan, tests::disable_checksum_offload);
+    test_case!(plan, tests::disable_tso);
+    test_case!(plan, tests::eee);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -340,11 +335,11 @@ pub fn system_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn partner_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("partner-test");
 
-    plan.test_case("mtu", tests::mtu);
-    plan.test_case("vlan_smoke_test", tests::vlan_smoke_test);
-    plan.test_case("ptp_receiver", tests::ptp_receiver);
-    plan.test_case("ptp_transmitter", tests::ptp_transmitter);
-    plan.test_case("verify_log_messages", tests::verify_log_messages);
+    test_case!(plan, tests::mtu);
+    test_case!(plan, tests::vlan_smoke_test);
+    test_case!(plan, tests::ptp_receiver);
+    test_case!(plan, tests::ptp_transmitter);
+    test_case!(plan, tests::verify_log_messages);
 
     plan
 }
@@ -352,51 +347,27 @@ pub fn partner_test<T: CommandExecutor>() -> TestPlan<T> {
 pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     let mut plan = TestPlan::new("tsn-test");
 
-    plan.test_case("netperf_pair_nop", tsn_tests::netperf_pair_nop);
-    plan.test_case("netperf_pair_taprio", tsn_tests::netperf_pair_taprio);
-    plan.test_case("netperf_pair_mqprio", tsn_tests::netperf_pair_mqprio);
-    plan.test_case(
-        "netperf_pair_mqprio_and_cbs",
-        tsn_tests::netperf_pair_mqprio_and_cbs,
-    );
-    plan.test_case(
-        "netperf_pair_mqprio_and_cbs_with_5_queues",
-        tsn_tests::netperf_pair_mqprio_and_cbs_with_5_queues,
-    );
+    test_case!(plan, tsn_tests::netperf_pair_nop);
+    test_case!(plan, tsn_tests::netperf_pair_taprio);
+    test_case!(plan, tsn_tests::netperf_pair_mqprio);
+    test_case!(plan, tsn_tests::netperf_pair_mqprio_and_cbs);
+    test_case!(plan, tsn_tests::netperf_pair_mqprio_and_cbs_with_5_queues);
 
-    plan.test_case("netperf_quad_nop", tsn_tests::netperf_quad_nop);
-    plan.test_case("netperf_quad_taprio", tsn_tests::netperf_quad_taprio);
-    plan.test_case("netperf_quad_mqprio", tsn_tests::netperf_quad_mqprio);
-    plan.test_case(
-        "netperf_quad_mqprio_and_cbs",
-        tsn_tests::netperf_quad_mqprio_and_cbs,
-    );
-    plan.test_case(
-        "netperf_quad_mqprio_and_cbs_with_5_queues",
-        tsn_tests::netperf_quad_mqprio_and_cbs_with_5_queues,
-    );
+    test_case!(plan, tsn_tests::netperf_quad_nop);
+    test_case!(plan, tsn_tests::netperf_quad_taprio);
+    test_case!(plan, tsn_tests::netperf_quad_mqprio);
+    test_case!(plan, tsn_tests::netperf_quad_mqprio_and_cbs);
+    test_case!(plan, tsn_tests::netperf_quad_mqprio_and_cbs_with_5_queues);
 
-    plan.test_case("profinet_rt_nop", tsn_tests::profinet_rt_nop);
-    plan.test_case("profinet_rt_taprio", tsn_tests::profinet_rt_taprio);
-    plan.test_case("profinet_cyclic_only", tsn_tests::profinet_cyclic_only);
-    plan.test_case("profinet_rt_mqprio_xdp", tsn_tests::profinet_rt_mqprio_xdp);
-    plan.test_case(
-        "profinet_rt_mqprio_noxdp",
-        tsn_tests::profinet_rt_mqprio_noxdp,
-    );
-    plan.test_case(
-        "profinet_rt_mqprio_and_cbs",
-        tsn_tests::profinet_rt_mqprio_and_cbs,
-    );
+    test_case!(plan, tsn_tests::profinet_rt_nop);
+    test_case!(plan, tsn_tests::profinet_rt_taprio);
+    test_case!(plan, tsn_tests::profinet_cyclic_only);
+    test_case!(plan, tsn_tests::profinet_rt_mqprio_xdp);
+    test_case!(plan, tsn_tests::profinet_rt_mqprio_noxdp);
+    test_case!(plan, tsn_tests::profinet_rt_mqprio_and_cbs);
 
-    plan.test_case(
-        "txrx_tsn_mqprio_and_etf",
-        tsn_tests::txrx_tsn_mqprio_and_etf,
-    );
-    plan.test_case(
-        "txrx_tsn_mqprio_and_etf_with_5_queues",
-        tsn_tests::txrx_tsn_mqprio_and_etf_with_5_queues,
-    );
+    test_case!(plan, tsn_tests::txrx_tsn_mqprio_and_etf);
+    test_case!(plan, tsn_tests::txrx_tsn_mqprio_and_etf_with_5_queues);
 
     plan
 }
