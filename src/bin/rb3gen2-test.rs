@@ -3,7 +3,7 @@ use std::process::{self, Command};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use dutlib::{
-    CommandExecutor, Config, UnrecoverableError, UnrecoverableErrorKind,
+    CommandExecutor, Config, RunTestError, UnrecoverableError,
     native::{NativeExecutor, SudoExecutor},
     plans::{self, Selection, TestPlan},
     read_config, tests,
@@ -160,7 +160,7 @@ fn run_test(
     config: Config,
     args: RunTestCli,
     test_plan: TestPlan<NativeExecutor>,
-) -> Result<(), UnrecoverableError> {
+) -> Result<(), RunTestError> {
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&config.module)?;
@@ -171,13 +171,10 @@ fn run_test(
 
     match test_plan.run(&config, &mut shell) {
         Ok(0) => Ok(()),
-        Ok(n) => Err(UnrecoverableError::message(format!(
-            "{} reported {n} failures",
-            test_plan.name()
-        ))),
+        Ok(n) => Err(RunTestError::CompleteWithFailures(n)),
         Err(e) => {
             log::info!("Debug info: {:?}", shell.try_read_to_string());
-            Err(e)
+            Err(e.into())
         }
     }
 }
@@ -238,7 +235,7 @@ fn setup_tsn(config: Config, args: TsnCli) -> Result<(), UnrecoverableError> {
     Ok(())
 }
 
-fn app() -> Result<(), UnrecoverableError> {
+fn app() -> Result<(), RunTestError> {
     let mut cli = Cli::parse();
 
     let levels = [
@@ -283,14 +280,14 @@ fn app() -> Result<(), UnrecoverableError> {
 
     let result = match cli.command {
         Commands::SmokeTest(args) => run_test(config, args, plans::smoke_test()),
-        Commands::Cycle(args) => cycle(config, args),
+        Commands::Cycle(args) => cycle(config, args).map_err(RunTestError::from),
         Commands::FunctionalTest(args) => run_test(config, args, plans::functional_test()),
         Commands::BandwidthTest(args) => run_test(config, args, plans::bandwidth_test()),
         Commands::LatencyTest(args) => run_test(config, args, plans::latency_test()),
         Commands::PhyQuickTest(args) => run_test(config, args, plans::phy_quick_test()),
         Commands::SystemTest(args) => run_test(config, args, plans::system_test()),
         Commands::AllTests(args) => run_test(config, args, all_test_plans()),
-        Commands::SetupTsn(args) => setup_tsn(config, args),
+        Commands::SetupTsn(args) => setup_tsn(config, args).map_err(RunTestError::from),
     };
 
     if let Some(settings) = printk {
@@ -309,11 +306,13 @@ fn main() {
         return;
     };
 
-    log::error!("{e:?}");
+    match &e {
+        RunTestError::Unrecoverable(_) => log::error!("{e:?}"),
+        _ => log::error!("{e}"),
+    }
 
-    process::exit(match e.kind() {
-        UnrecoverableErrorKind::Message(_) => 1,
-        UnrecoverableErrorKind::Io(_) => 2,
-        _ => 3,
+    process::exit(match e {
+        RunTestError::CompleteWithFailures(_) => 1,
+        RunTestError::Unrecoverable(_) => 255,
     });
 }

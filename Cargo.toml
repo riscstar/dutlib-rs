@@ -13,10 +13,10 @@ errno = "0.3.14"
 expectrl = { version = "0.8.0", features = ["polling"] }
 log = "0.4.29"
 regex = "1.12.3"
+rolling-stats = "0.8.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_yaml = { package = "yaml_serde", version = "0.10" }
-statrs = "0.19.1"
 toml = "1.1.0"
 
 [profile.release]

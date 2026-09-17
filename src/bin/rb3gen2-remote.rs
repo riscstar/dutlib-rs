@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use expectrl::{repl::ReplSession, session::OsSession};
 
 use dutlib::{
-    CommandExecutor, Config, UnrecoverableError, UnrecoverableErrorKind,
+    CommandExecutor, Config, RunTestError, UnrecoverableError,
     dut::DeviceUnderTest,
     plans::{self, Selection, TestPlan},
     read_config, tests,
@@ -211,7 +211,7 @@ fn run_test(
     config: Config,
     args: RunTestCli,
     test_plan: TestPlan<ReplSession<OsSession>>,
-) -> Result<(), UnrecoverableError> {
+) -> Result<(), RunTestError> {
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     if args.reboot {
         let console = board.console()?;
@@ -226,13 +226,10 @@ fn run_test(
 
     match test_plan.run(&config, &mut console) {
         Ok(0) => Ok(()),
-        Ok(n) => Err(UnrecoverableError::message(format!(
-            "{} reported {n} failures",
-            test_plan.name()
-        ))),
+        Ok(n) => Err(RunTestError::CompleteWithFailures(n)),
         Err(e) => {
             log::info!("{:?}", console.try_read_to_string());
-            Err(e)
+            Err(e.into())
         }
     }
 }
@@ -294,7 +291,7 @@ fn all_tests(config: Config, args: AllTestsCli) -> Result<(), UnrecoverableError
     }
 }
 
-fn app() -> Result<(), UnrecoverableError> {
+fn app() -> Result<(), RunTestError> {
     let mut cli = Cli::parse();
 
     let levels = [
@@ -323,9 +320,9 @@ fn app() -> Result<(), UnrecoverableError> {
     }
 
     match cli.command {
-        Commands::Reboot(args) => reboot(config, args),
+        Commands::Reboot(args) => reboot(config, args).map_err(RunTestError::from),
         Commands::SmokeTest(args) => run_test(config, args, plans::smoke_test()),
-        Commands::BootCycle(args) => boot_cycle(config, args),
+        Commands::BootCycle(args) => boot_cycle(config, args).map_err(RunTestError::from),
         Commands::FunctionalTest(args) => run_test(config, args, plans::functional_test()),
         Commands::BandwidthTest(args) => run_test(config, args, plans::bandwidth_test()),
         Commands::LatencyTest(args) => run_test(config, args, plans::latency_test()),
@@ -333,7 +330,7 @@ fn app() -> Result<(), UnrecoverableError> {
         Commands::PhyQuickTest(args) => run_test(config, args, plans::phy_quick_test()),
         Commands::SystemTest(args) => run_test(config, args, plans::system_test()),
         Commands::PartnerTest(args) => run_test(config, args, plans::partner_test()),
-        Commands::AllTests(args) => all_tests(config, args),
+        Commands::AllTests(args) => all_tests(config, args).map_err(RunTestError::from),
         Commands::TsnTest(args) => run_test(config, args, plans::tsn_test()),
     }
 }
@@ -343,11 +340,13 @@ fn main() {
         return;
     };
 
-    log::error!("{e:?}");
+    match &e {
+        RunTestError::Unrecoverable(_) => log::error!("{e:?}"),
+        _ => log::error!("{e}"),
+    }
 
-    process::exit(match e.kind() {
-        UnrecoverableErrorKind::Message(_) => 1,
-        UnrecoverableErrorKind::Io(_) => 2,
-        _ => 3,
+    process::exit(match e {
+        RunTestError::CompleteWithFailures(_) => 1,
+        RunTestError::Unrecoverable(_) => 255,
     });
 }

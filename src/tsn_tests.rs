@@ -1,11 +1,12 @@
 use std::{
     collections::BTreeMap,
+    fmt,
     io::{self, Write},
     thread::{self},
     time::{Duration, Instant},
 };
 
-use statrs::statistics::Statistics as StatrsStatistics;
+use rolling_stats::Stats;
 
 use crate::{
     CommandExecutor, Config, UnrecoverableError,
@@ -25,6 +26,85 @@ pub enum QdiscUseCase {
     MqprioAndEtf,
     MqprioAndCbsWith5Queues,
     MqprioAndEtfWith5Queues,
+}
+
+impl QdiscUseCase {
+    /// Whether this use case requires an adapter with at least 5 TX queues.
+    fn requires_5_queues(self) -> bool {
+        matches!(
+            self,
+            QdiscUseCase::MqprioAndCbsWith5Queues | QdiscUseCase::MqprioAndEtfWith5Queues
+        )
+    }
+}
+
+/// An error returned by [`tsn_setup`].
+#[derive(Debug)]
+pub enum TsnSetupError {
+    /// The test case cannot run because the adapter does not have enough
+    /// queues (e.g. a 5-queue use case on a 4-queue adapter).
+    Unsupported,
+    /// The setup could not be completed.
+    Unrecoverable(UnrecoverableError),
+}
+
+impl fmt::Display for TsnSetupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TsnSetupError::Unsupported => write!(f, "Adapter does not have enough queues"),
+            TsnSetupError::Unrecoverable(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for TsnSetupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            TsnSetupError::Unsupported => None,
+            TsnSetupError::Unrecoverable(e) => Some(e),
+        }
+    }
+}
+
+impl From<UnrecoverableError> for TsnSetupError {
+    fn from(e: UnrecoverableError) -> Self {
+        TsnSetupError::Unrecoverable(e)
+    }
+}
+
+/// Handle a [`TsnSetupError`] for a test that requires 5 queues.
+///
+/// An unsupported setup is logged as SKIPPED and reported as `None` so that the
+/// caller can report zero failures.
+fn skip_if_unsupported<T>(
+    result: Result<T, TsnSetupError>,
+    test: &str,
+) -> Result<Option<T>, UnrecoverableError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(TsnSetupError::Unsupported) => {
+            log::info!("SKIPPED: {test} (adapter has fewer than 5 TX queues)");
+            Ok(None)
+        }
+        Err(TsnSetupError::Unrecoverable(e)) => Err(e),
+    }
+}
+
+/// Handle a [`TsnSetupError`] for a test that does not require 5 queues.
+///
+/// Such a test can never observe [`TsnSetupError::Unsupported`] so this panics
+/// if it is seen.
+fn expect_supported<T>(
+    result: Result<T, TsnSetupError>,
+    test: &str,
+) -> Result<T, UnrecoverableError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(TsnSetupError::Unsupported) => {
+            panic!("{test}: unexpected Unsupported error (adapter has fewer than 5 TX queues)")
+        }
+        Err(TsnSetupError::Unrecoverable(e)) => Err(e),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1009,16 +1089,11 @@ pub fn tsn_setup(
     cycle_time_ns: u64,
     use_case: QdiscUseCase,
     ptp: PtpMode,
-) -> Result<(TrafficContext, UndoTracker, UndoTracker), UnrecoverableError> {
+) -> Result<(TrafficContext, UndoTracker, UndoTracker), TsnSetupError> {
     let channel_settings = stmmac_get_queue_count(shell, &config.adapter)?;
     let tx = channel_settings.tx.unwrap_or(1);
-    if tx < 5
-        && (use_case == QdiscUseCase::MqprioAndCbsWith5Queues
-            || use_case == QdiscUseCase::MqprioAndEtfWith5Queues)
-    {
-        return Err(UnrecoverableError::message(
-            "adapter must have at least 5 TX queues",
-        ));
+    if tx < 5 && use_case.requires_5_queues() {
+        return Err(TsnSetupError::Unsupported);
     }
 
     let context = traffic_context(config, shell, partner)?;
@@ -1140,13 +1215,16 @@ pub fn profinet_cyclic_only(
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
-        config,
-        shell,
-        partner,
-        cycle_time_ns,
-        QdiscUseCase::Taprio,
-        PtpMode::Enabled,
+    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
+        tsn_setup(
+            config,
+            shell,
+            partner,
+            cycle_time_ns,
+            QdiscUseCase::Taprio,
+            PtpMode::Enabled,
+        ),
+        "profinet_cyclic_only",
     )?;
 
     config_cyclic_only(&context, shell, partner, cycle_time_ns)?;
@@ -1320,13 +1398,16 @@ pub fn profinet_rt_mqprio_xdp(
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
-        config,
-        shell,
-        partner,
-        cycle_time_ns,
-        QdiscUseCase::Mqprio,
-        PtpMode::Enabled,
+    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
+        tsn_setup(
+            config,
+            shell,
+            partner,
+            cycle_time_ns,
+            QdiscUseCase::Mqprio,
+            PtpMode::Enabled,
+        ),
+        "profinet_rt_mqprio_xdp",
     )?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
@@ -1352,13 +1433,16 @@ pub fn profinet_rt_mqprio_noxdp(
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
-        config,
-        shell,
-        partner,
-        cycle_time_ns,
-        QdiscUseCase::Mqprio,
-        PtpMode::Enabled,
+    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
+        tsn_setup(
+            config,
+            shell,
+            partner,
+            cycle_time_ns,
+            QdiscUseCase::Mqprio,
+            PtpMode::Enabled,
+        ),
+        "profinet_rt_mqprio_noxdp",
     )?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
@@ -1383,13 +1467,16 @@ pub fn profinet_rt_mqprio_and_cbs(
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
-        config,
-        shell,
-        partner,
-        cycle_time_ns,
-        QdiscUseCase::MqprioAndCbs,
-        PtpMode::Enabled,
+    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
+        tsn_setup(
+            config,
+            shell,
+            partner,
+            cycle_time_ns,
+            QdiscUseCase::MqprioAndCbs,
+            PtpMode::Enabled,
+        ),
+        "profinet_rt_mqprio_and_cbs",
     )?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
@@ -1414,13 +1501,16 @@ pub fn profinet_rt_taprio(
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let (context, mut shell_teardown, mut partner_teardown) = tsn_setup(
-        config,
-        shell,
-        partner,
-        cycle_time_ns,
-        QdiscUseCase::Taprio,
-        PtpMode::Enabled,
+    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
+        tsn_setup(
+            config,
+            shell,
+            partner,
+            cycle_time_ns,
+            QdiscUseCase::Taprio,
+            PtpMode::Enabled,
+        ),
+        "profinet_rt_taprio",
     )?;
 
     config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
@@ -1514,7 +1604,7 @@ fn netperf_pair(
     config: &Config,
     shell: &mut impl CommandExecutor,
     use_case: Option<QdiscUseCase>,
-) -> Result<(f64, f64), UnrecoverableError> {
+) -> Result<(f64, f64), TsnSetupError> {
     const DURATION_UDP_HIGH: u64 = 10;
     const DURATION_RTC: u64 = DURATION_UDP_HIGH + 2;
 
@@ -1582,7 +1672,7 @@ pub fn netperf_pair_nop(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (hi, lo) = netperf_pair(config, shell, None)?;
+    let (hi, lo) = expect_supported(netperf_pair(config, shell, None), "netperf_pair_nop")?;
 
     let mut failures = 0;
 
@@ -1616,7 +1706,10 @@ pub fn netperf_pair_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::Taprio))?;
+    let (hi, lo) = expect_supported(
+        netperf_pair(config, shell, Some(QdiscUseCase::Taprio)),
+        "netperf_pair_taprio",
+    )?;
 
     let mut failures = 0;
 
@@ -1645,7 +1738,10 @@ pub fn netperf_pair_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::Mqprio))?;
+    let (hi, lo) = expect_supported(
+        netperf_pair(config, shell, Some(QdiscUseCase::Mqprio)),
+        "netperf_pair_mqprio",
+    )?;
 
     let mut failures = 0;
 
@@ -1680,7 +1776,10 @@ pub fn netperf_pair_mqprio_and_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbs))?;
+    let (hi, lo) = expect_supported(
+        netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbs)),
+        "netperf_pair_mqprio_and_cbs",
+    )?;
 
     let mut failures = 0;
 
@@ -1709,7 +1808,13 @@ pub fn netperf_pair_mqprio_and_cbs_with_5_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (hi, lo) = netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues))?;
+    let Some((hi, lo)) = skip_if_unsupported(
+        netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues)),
+        "netperf_pair_mqprio_and_cbs_with_5_queues",
+    )?
+    else {
+        return Ok(0);
+    };
 
     let mut failures = 0;
 
@@ -1735,7 +1840,7 @@ fn netperf_quad(
     config: &Config,
     shell: &mut impl CommandExecutor,
     use_case: Option<QdiscUseCase>,
-) -> Result<(f64, f64, f64, f64), UnrecoverableError> {
+) -> Result<(f64, f64, f64, f64), TsnSetupError> {
     const DURATION_UDP_LOW: u64 = 10;
     const DURATION_UDP_HIGH: u64 = DURATION_UDP_LOW + 2;
     const DURATION_RTA: u64 = DURATION_UDP_HIGH + 2;
@@ -1824,7 +1929,8 @@ pub fn netperf_quad_nop(
         (2.0 * (T / 2.0) + (DURATION_SECS + 2.0) * T_UDP_HIGH) / (DURATION_SECS + 4.0);
     const T_RTC: f64 = (2.0 * T + (DURATION_SECS + 4.0) * T_RTA) / (DURATION_SECS + 6.0);
 
-    let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, None)?;
+    let (rtc, rta, udp_high, udp_low) =
+        expect_supported(netperf_quad(config, shell, None), "netperf_quad_nop")?;
 
     let mut failures = 0;
 
@@ -1854,7 +1960,10 @@ pub fn netperf_quad_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, Some(QdiscUseCase::Taprio))?;
+    let (rtc, rta, udp_high, udp_low) = expect_supported(
+        netperf_quad(config, shell, Some(QdiscUseCase::Taprio)),
+        "netperf_quad_taprio",
+    )?;
 
     let mut failures = 0;
 
@@ -1885,7 +1994,10 @@ pub fn netperf_quad_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (rtc, rta, udp_high, udp_low) = netperf_quad(config, shell, Some(QdiscUseCase::Mqprio))?;
+    let (rtc, rta, udp_high, udp_low) = expect_supported(
+        netperf_quad(config, shell, Some(QdiscUseCase::Mqprio)),
+        "netperf_quad_mqprio",
+    )?;
 
     let mut failures = 0;
 
@@ -1916,7 +2028,10 @@ pub fn netperf_quad_mqprio_and_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (rtc, rta, udp_high, _) = netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbs))?;
+    let (rtc, rta, udp_high, _) = expect_supported(
+        netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbs)),
+        "netperf_quad_mqprio_and_cbs",
+    )?;
 
     let mut failures = 0;
 
@@ -1942,8 +2057,13 @@ pub fn netperf_quad_mqprio_and_cbs_with_5_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let (rtc, rta, udp_high, _) =
-        netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues))?;
+    let Some((rtc, rta, udp_high, _)) = skip_if_unsupported(
+        netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues)),
+        "netperf_quad_mqprio_and_cbs_with_5_queues",
+    )?
+    else {
+        return Ok(0);
+    };
 
     let mut failures = 0;
 
@@ -1969,7 +2089,7 @@ fn txrx_tsn(
     config: &Config,
     shell: &mut impl CommandExecutor,
     use_case: QdiscUseCase,
-) -> Result<u32, UnrecoverableError> {
+) -> Result<Stats<f64>, TsnSetupError> {
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
@@ -2014,57 +2134,118 @@ fn txrx_tsn(
     partner_teardown.restore(partner)?;
 
     let log = partner.cmd("cat packet.log")?;
-    let deltas = log
-        .lines()
-        .map(|ln| {
-            let mut fields = ln.split_whitespace();
-            let tx_time = fields.nth(4).unwrap_or("").parse::<u64>().unwrap_or(0);
-            let rx_time = fields.next().unwrap_or("").parse::<u64>().unwrap_or(0);
+    let mut stats: Stats<f64> = Stats::new();
+    for ln in log.lines() {
+        let mut fields = ln.split_whitespace();
+        let tx_time = fields.nth(4).unwrap_or("").parse::<u64>().unwrap_or(0);
+        let rx_time = fields.next().unwrap_or("").parse::<u64>().unwrap_or(0);
 
-            rx_time as f64 - tx_time as f64
-        })
-        .collect::<Vec<_>>();
-
-    let min = deltas.clone().min();
-    let max = deltas.clone().max();
-    let mean = deltas.clone().mean();
-    let stddev = deltas.clone().std_dev();
-    let len = deltas.len();
+        stats.update(rx_time as f64 - tx_time as f64);
+    }
 
     log::info!(
-        "txrx_tsn_mqprio_and_etf: delta stats: N={len} min={min} mean={mean} max={max} stddev={stddev}",
+        "txrx_tsn: delta stats: N={} min={} mean={} max={} stddev={}",
+        stats.count,
+        stats.min,
+        stats.mean,
+        stats.max,
+        stats.std_dev,
     );
 
-    let mut failures = 0;
-
-    // If packets go missing that's usually because they were still valid (before
-    // deadline) when issued by userspace but were dropped by the kernel for
-    // being late as they were issued to the DMA queue.
-    if len < 1200 {
-        log::error!("txrx_tsn_mqprio_and_etf: Expected >1200 samples, got {len}",);
-        failures += 1;
-    }
-
-    if mean < 0.0 {
-        log::error!("txrx_tsn_mqprio_and_etf: Most packets were not ready in time: {mean} ns");
-        failures += 1;
-    }
-
-    Ok(failures)
+    Ok(stats)
 }
 
 pub fn txrx_tsn_mqprio_and_etf(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtf)
+    let stats = expect_supported(
+        txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtf),
+        "txrx_tsn_mqprio_and_etf",
+    )?;
+
+    let mut failures = 0;
+
+    // If packets go missing that's usually because they were still valid (before
+    // deadline) when issued by userspace but were dropped by the kernel for
+    // being late as they were issued to the DMA queue.
+    if stats.count < 1200 {
+        log::error!(
+            "txrx_tsn_mqprio_and_etf: Expected >1200 samples, got {}",
+            stats.count
+        );
+        failures += 1;
+    }
+
+    if stats.mean > 0.0 {
+        log::error!(
+            "txrx_tsn_mqprio_and_etf: Mean is positive, this almost certainly means the etf delta is too small: {} ns",
+            stats.mean
+        );
+        failures += 1;
+    }
+
+    if stats.std_dev > 15000.0 {
+        log::error!(
+            "txrx_tsn_mqprio_and_etf: Std dev is too large: {} ns",
+            stats.std_dev
+        );
+        failures += 1;
+    }
+
+    Ok(failures)
 }
 
 pub fn txrx_tsn_mqprio_and_etf_with_5_queues(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtfWith5Queues)
+    let Some(stats) = skip_if_unsupported(
+        txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtfWith5Queues),
+        "txrx_tsn_mqprio_and_etf_with_5_queues",
+    )?
+    else {
+        return Ok(0);
+    };
+
+    let mut failures = 0;
+
+    if stats.count < 1200 {
+        log::error!(
+            "txrx_tsn_mqprio_and_etf_with_5_queues: Expected >1200 samples, got {}",
+            stats.count
+        );
+        failures += 1;
+    }
+
+    // Packets should not be transmitted early than their launch time so the
+    // min delta should always be positive (the driver will round launch times
+    // down to a 256ns boundary... but the smallest packet takes at least 268ns
+    // to transmit so negative arrival times should be impossible)
+    if stats.min < 0.0 {
+        log::error!(
+            "txrx_tsn_mqprio_and_etf_with_5_queues: Min delta is negative: {} ns",
+            stats.min
+        );
+        failures += 1;
+    }
+
+    // Packet timings should be fairly consistent (although note that stmmac
+    // launch times are quantized to 256ns so there will always be nanosecond
+    // level jitter)
+    //
+    // Note also that this level of jitter is only achievable on an otherwise
+    // idle NIC. When there is other network traffic than, without frame
+    // preemption, high priority packets must wait up to ~5µs for an 1500 bytes
+    // packet to complete (at 2.5G).
+    if stats.std_dev > 500.0 {
+        log::error!(
+            "txrx_tsn_mqprio_and_etf: Std dev is too large: {} ns",
+            stats.std_dev
+        );
+        failures += 1;
+    }
+    Ok(failures)
 }
 
 #[cfg(test)]

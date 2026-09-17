@@ -16,7 +16,7 @@ pub mod tracker;
 pub mod tsn_tests;
 pub mod tuning;
 
-pub use error::{UnrecoverableError, UnrecoverableErrorKind};
+pub use error::{RunTestError, UnrecoverableError, UnrecoverableErrorKind};
 
 /// The type of connection used by a [`CommandExecutor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
