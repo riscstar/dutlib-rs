@@ -24,4 +24,6 @@ toml = "1.1.0"
 # too much (and we don't really need the half meg)
 #lto = "fat"
 opt-level = "s"
-strip = true
+# Keep the symbol table so that std::backtrace::Backtrace can resolve frames
+# (strip = true drops it and leaves backtraces empty)
+strip = "debuginfo"
