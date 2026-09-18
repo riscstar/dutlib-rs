@@ -278,6 +278,13 @@ fn app() -> Result<(), RunTestError> {
         config.module = module;
     }
 
+    // Remove any remote-only configuration options that have been included in
+    // the config file. Some of these options confuse helper functions (such
+    // as auto-tuning) and should be ignored.
+    config.console = "".to_string();
+    config.partner_adapter = "".to_string();
+    config.power_cycle = "".to_string();
+
     let result = match cli.command {
         Commands::SmokeTest(args) => run_test(config, args, plans::smoke_test()),
         Commands::Cycle(args) => cycle(config, args).map_err(RunTestError::from),
