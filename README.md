@@ -38,13 +38,13 @@ configuring the DUT to automatically log as root after reboot,
 installing the test program, and installing the configuration file.
 
 Commands that must be installed on the DUT for this test suite
-include: dmesg, ethtool, ip, iperf3, linuxptp, ping, and scp.
+include: dmesg, ethtool, ip, iperf3, linuxptp, ping, scp and cpupower.
 Most of these should be already present, but just in case:
 
 ~~~sh
 apt update
 apt install \
-  util-linux ethtool iproute2 iperf3 linuxptp iputils-ping \
+  util-linux ethtool iproute2 iperf3 linuxptp linux-cpupower iputils-ping \
   openssh-client libmosquitto1 libxdp1
 ~~~
 
@@ -134,7 +134,7 @@ already in place, but just in case:
 ~~~sh
 sudo apt update
 sudo apt install \
-  util-linux ethtool iproute2 iperf3 linuxptp iputils-ping \
+  util-linux ethtool iproute2 iperf3 linuxptp linux-cpupower iputils-ping \
   openssh-client openssh-server libmosquitto1 libxdp1
 ~~~
 
@@ -294,6 +294,12 @@ partner_adapter = "enp3s0"
 ## access to the DUT.  If it is not set, boot cycle testing will still work,
 ## but will not be able to automatically recover and continue testing.
 power_cycle = "iot-power-cycle rb3gen2"
+
+## [OPTIONAL] no_autotune will suppress automatic system tuning to reduce
+## wake up latency and improve performance. This tuning is necessary for
+## RB3gen2 to provide adequate latency for some Time-Senstive Networking
+## scenarios.
+# no_autotune = true
 ~~~
 
 As stated earlier, the configuration file is placed in a new `.dutlib`
