@@ -3,7 +3,7 @@ use std::process::{self, Command};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use dutlib::{
-    CommandExecutor, Config, RunTestError, UnrecoverableError,
+    CommandExecutor, Config, GIT_VERSION, RunTestError, UnrecoverableError,
     native::{NativeExecutor, SudoExecutor},
     plans::{self, Selection, TestPlan},
     read_config, tests,
@@ -12,7 +12,7 @@ use dutlib::{
 };
 
 #[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(name = env!("CARGO_BIN_NAME"), author, version = GIT_VERSION, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]

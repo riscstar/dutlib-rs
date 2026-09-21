@@ -18,6 +18,12 @@ pub mod tuning;
 
 pub use error::{RunTestError, UnrecoverableError, UnrecoverableErrorKind};
 
+/// Version string reported by `--version`. It contains the output of
+/// `git describe --dirty` (with a leading `v` stripped) followed by the date
+/// and time of the described commit. It is generated at build time by
+/// `build.rs`.
+pub const GIT_VERSION: &str = env!("DUTLIB_GIT_VERSION");
+
 /// The type of connection used by a [`CommandExecutor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandExecutorConnection {
