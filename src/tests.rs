@@ -510,16 +510,24 @@ pub fn verify_log_messages(
                 continue;
             }
 
+            // These are caused by ASPM and note that, for TSN use-cases, ASPM must be disabled to avoid unacceptable
+            // latency glitches during wake-up).
             // [  749.349882] pcieport 0001:00:00.0: AER: Correctable error message received from 0001:01:00.0
             // [  749.360186] pcieport 0001:01:00.0: PCIe Bus Error: severity=Correctable, type=Data Link Layer, (Transmitter ID)
             // [  749.372161] pcieport 0001:01:00.0:   device [1179:0623] error status/mask=00001000/00006000
             // [  749.381840] pcieport 0001:01:00.0:    [12] Timeouts
             // [            ] pcieport 0001:01:00.0: AER:   Error of this Agent is reported first
+            // [   12.613500] xhci-pci-renesas 0001:04:00.0: PCIe Bus Error: severity=Correctable
+            // [   12.613505] xhci-pci-renesas 0001:04:00.0:   device [1912:0014] error status/mask=00002000/00000000
+            // [   12.613518] xhci-pci-renesas 0001:04:00.0: PCIe Bus Error: severity=Uncorrectable (Non-Fatal)
+            // [   12.613523] xhci-pci-renesas 0001:04:00.0:   device [1912:0014] error status/mask=00010000/00000000
             if !lower.contains("warn")
                 && !lower.contains("bug")
                 && (lower.contains("pcieport")
+                    || lower.contains("tc9564-pci")
                     || lower.contains("tc956x-pci")
-                    || lower.contains("pcie_tc956x"))
+                    || lower.contains("pcie_tc956x")
+                    || lower.contains("xhci-pci-renesas"))
                 && (lower.contains("correctable")
                     || lower.contains("error status/mask=")
                     || lower.contains("error of this agent is reported first"))
@@ -532,7 +540,16 @@ pub fn verify_log_messages(
                 continue;
             }
 
-            // The following are "normal" when an RB3gen2 boots:
+            // Problems with the tracing system are nothing to do with TC956x (or stmmac)
+            // [    0.000000] TRACE EVENT ERROR: Event mtu3_gadget_ep_set_halt has double dereference in TP_printk: &REC->gpd_ring->dma
+            // [    0.000000] WARNING: kernel/trace/trace_events.c:420 at test_double_dereference+0x134/0x140, CPU#0: swapper/0/0
+            if ln.contains("TRACE EVENT ERROR:")
+                || ln.contains("WARNING: kernel/trace/trace_events.c")
+            {
+                continue;
+            }
+
+            // The following are "normal" when an RB3gen2 boots (although not all from the same kernel version):
             // [    1.785316] geni_i2c 980000.i2c: Direct firmware load for qcom/qcs6490/qupv3fw.elf failed with error -2
             // [    1.836510] remoteproc remoteproc1: Direct firmware load for qcom/qcs6490/adsp.mbn failed with error -2
             // [    1.839334] remoteproc remoteproc3: Direct firmware load for qcom/qcs6490/cdsp.mbn failed with error -2
@@ -541,6 +558,9 @@ pub fn verify_log_messages(
             // [   38.808280] usb 2-1: device not accepting address 2, error -108
             // [   29.163988] WARNING: drivers/soc/qcom/rpmh.c:386 at rpmh_write_batch+0x198/0x2c0, CPU#1: kworker/u33:0/92
             // [   29.505949] Error sending AMC RPMH requests (-110)
+            // [   12.224882] onboard-usb-dev 1c08000.pcie:pcie@0:pcie@0,0:pcie@2,0:usb-controller@0,0:hub@1: error -EBUSY: failed to get reset GPIO
+            // [   12.224888] onboard-usb-dev 1c08000.pcie:pcie@0:pcie@0,0:pcie@2,0:usb-controller@0,0:hub@1: probe with driver onboard-usb-dev failed with error -16
+            // [   33.199733] usb 1-1: hub failed to enable device, error -62
             if ln.contains("Direct firmware load for qcom/qcs6490/qupv3fw.elf failed with error -2")
                 || ln
                     .contains("Direct firmware load for qcom/qcs6490/adsp.mbn failed with error -2")
@@ -551,6 +571,10 @@ pub fn verify_log_messages(
                 || (ln.contains("usb") && ln.contains("device not accepting address"))
                 || ln.contains("drivers/soc/qcom/rpmh.c:386 at rpmh_write_batch")
                 || ln.contains("Error sending AMC RPMH requests (-110)")
+                || (ln.contains("onboard-usb-dev") && ln.contains("failed to get reset GPIO"))
+                || (ln.contains("onboard-usb-dev")
+                    && ln.contains("probe with driver onboard-usb-dev failed"))
+                || (ln.contains("usb") && ln.contains("hub failed to enable device"))
             {
                 continue;
             }
