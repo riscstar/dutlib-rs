@@ -1,4 +1,8 @@
-use crate::{CommandExecutor, Config, UnrecoverableError, tests, tsn_tests, tuning};
+use crate::{
+    CommandExecutor, Config, UnrecoverableError, tests,
+    tsn_tests::{self},
+    tuning,
+};
 
 type TestFunc<T> = fn(&Config, &mut T) -> Result<u32, UnrecoverableError>;
 
@@ -53,6 +57,15 @@ impl Selection {
         } else {
             plan.filter(|f| self.matches(f))
         }
+    }
+}
+
+/// Join a plan `path` and a child `name` using `/` as the separator.
+fn join_path(path: &str, name: &str) -> String {
+    if path.is_empty() || path.ends_with('/') {
+        format!("{path}{name}")
+    } else {
+        format!("{path}/{name}")
     }
 }
 
@@ -198,11 +211,7 @@ impl<T: CommandExecutor> TestPlan<T> {
         shell: &mut T,
         path: &str,
     ) -> Result<u32, UnrecoverableError> {
-        let name = if path.is_empty() || path.ends_with("/") {
-            format!("{}{}", path, self.name)
-        } else {
-            format!("{}/{}", path, self.name)
-        };
+        let name = join_path(path, self.name);
         let mut failures = 0;
 
         for t in self.plan.iter() {
@@ -224,6 +233,25 @@ impl<T: CommandExecutor> TestPlan<T> {
         tuning::autotune(config, shell)?;
 
         self.run_with_path(config, shell, "")
+    }
+
+    /// Print the name of every test case in the plan.
+    ///
+    /// Nested plans are expanded and each test is printed on its own line using
+    /// the same path that would be logged when the test is run (for example
+    /// `smoke-test/ping`).
+    pub fn list(&self) {
+        self.list_with_path("");
+    }
+
+    fn list_with_path(&self, path: &str) {
+        let name = join_path(path, self.name);
+        for t in self.plan.iter() {
+            match t {
+                TestSet::TestCase(test_case) => println!("{name}/{}", test_case.name),
+                TestSet::TestPlan(test_plan) => test_plan.list_with_path(&name),
+            }
+        }
     }
 }
 
@@ -356,6 +384,7 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     test_case!(plan, tsn_tests::netperf_quad_nop);
     test_case!(plan, tsn_tests::netperf_quad_4q_taprio);
     test_case!(plan, tsn_tests::netperf_quad_4q_mqprio);
+    test_case!(plan, tsn_tests::netperf_quad_5q_mqprio);
     test_case!(plan, tsn_tests::netperf_quad_4q_cbs);
     test_case!(plan, tsn_tests::netperf_quad_5q_cbs);
 
@@ -367,8 +396,13 @@ pub fn tsn_test<T: CommandExecutor>() -> TestPlan<T> {
     test_case!(plan, tsn_tests::profinet_rt_4q_cbs);
     test_case!(plan, tsn_tests::profinet_rt_5q_cbs);
 
-    test_case!(plan, tsn_tests::txrx_tsn_4q_etf);
-    test_case!(plan, tsn_tests::txrx_tsn_5q_tbs);
+    test_case!(plan, tsn_tests::txrx_tsn_4q_etf_network_idle);
+    test_case!(plan, tsn_tests::txrx_tsn_4q_etf_network_busy);
+    test_case!(plan, tsn_tests::txrx_tsn_5q_etf_network_idle);
+    test_case!(plan, tsn_tests::txrx_tsn_5q_etf_network_busy);
+    test_case!(plan, tsn_tests::txrx_tsn_5q_tbs_network_idle);
+    test_case!(plan, tsn_tests::txrx_tsn_5q_tbs_network_busy);
+    test_case!(plan, tsn_tests::txrx_tsn_5q_tbs_fpe_network_busy);
 
     plan
 }

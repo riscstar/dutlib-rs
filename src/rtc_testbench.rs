@@ -154,7 +154,6 @@ impl TrafficClass {
         self
     }
 
-    #[allow(unused)]
     pub fn set_tx_timestamp(mut self) -> Self {
         let config = self.inner_mut();
         config.tx_timestamp_enabled = Some(true);

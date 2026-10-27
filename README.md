@@ -402,6 +402,15 @@ Sub-command parameters go on the right:
 rb3gen2-test all-tests --help
 ~~~
 
+Any sub-command that runs a test plan also accepts `--list`. This prints the
+names of the tests in the plan (after applying any `--select` filters) and then
+exits without connecting to or rebooting the board:
+
+~~~sh
+rb3gen2-test -q smoke-test --list
+rb3gen2-remote -q phy-an-test --list
+~~~
+
 ## Common test plans
 
 Note: To list other test plans use `--help`

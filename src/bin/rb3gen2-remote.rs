@@ -1,4 +1,4 @@
-use std::process;
+use std::{process, thread, time::Duration};
 
 use clap::{Parser, Subcommand};
 use expectrl::{repl::ReplSession, session::OsSession};
@@ -160,6 +160,9 @@ fn boot_cycle(config: Config, args: BootCycleCli) -> Result<(), UnrecoverableErr
     for cycle in 0..args.cycles {
         if remaining_this_boot <= 1 {
             let _ = board.reboot(console);
+            // It's a hack but this sleep gives the connection we just dropped
+            // a little time for asynchronous clean up
+            thread::sleep(Duration::from_secs(1));
             console = board.console_with_module(&config.module)?;
             let _ = tests::uname(&mut console).inspect_err(|e| log::error!("{e}"));
             remaining_this_boot = args.cycles_per_boot;
@@ -205,6 +208,10 @@ pub struct RunTestCli {
     /// Reboot before running any tests
     #[arg(short, long)]
     reboot: bool,
+
+    /// List the tests in the selected test plan then exit
+    #[arg(long)]
+    list: bool,
 }
 
 fn run_test(
@@ -212,6 +219,14 @@ fn run_test(
     args: RunTestCli,
     test_plan: TestPlan<ReplSession<OsSession>>,
 ) -> Result<(), RunTestError> {
+    // Filter if needed
+    let test_plan = args.select.filter_plan(test_plan);
+
+    if args.list {
+        test_plan.list();
+        return Ok(());
+    }
+
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     if args.reboot {
         let console = board.console()?;
@@ -220,9 +235,6 @@ fn run_test(
     let mut console = board.console_with_module(&config.module)?;
     tests::uname(&mut console)?;
     tests::wait_for_ipv4(&config, &mut console)?;
-
-    // Filter if needed
-    let test_plan = args.select.filter_plan(test_plan);
 
     match test_plan.run(&config, &mut console) {
         Ok(0) => Ok(()),
@@ -341,7 +353,7 @@ fn main() {
     };
 
     match &e {
-        RunTestError::Unrecoverable(_) => log::error!("{e:?}"),
+        RunTestError::Unrecoverable(err) => log::error!("{err:?}"),
         _ => log::error!("{e}"),
     }
 

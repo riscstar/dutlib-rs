@@ -1,14 +1,16 @@
 use std::path::Path;
 
-use crate::{CommandExecutor, UnrecoverableError};
+use crate::{CommandExecutor, CommandExecutorConnection, UnrecoverableError};
 
 pub struct UndoTracker {
+    connection: CommandExecutorConnection,
     commands: Vec<String>,
 }
 
 impl UndoTracker {
-    pub fn new() -> Self {
+    pub fn new(shell: &impl CommandExecutor) -> Self {
         Self {
+            connection: shell.connection(),
             commands: Vec::new(),
         }
     }
@@ -50,8 +52,14 @@ impl Drop for UndoTracker {
     fn drop(&mut self) {
         if !self.commands.is_empty() {
             log::error!(
-                "UndoTracker contains pending state changes: {:?}",
+                "UndoTracker for {} contains pending state changes: {}",
+                self.connection,
                 self.commands
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
             );
         }
     }

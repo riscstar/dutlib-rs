@@ -224,7 +224,13 @@ fn iperf3_helper(
     args: &str,
 ) -> Result<([f64; 2], [f64; 2]), UnrecoverableError> {
     let ipaddr = &config.ipaddr;
+
+    let before = ethtool::statistics(shell, &config.adapter)?;
     let reply = shell.cmd(&format!("iperf3 -c {ipaddr} -i 5 -t 5 --json {args}"))?;
+    log::info!(
+        "Packet counts: {:?}",
+        ethtool::statistics(shell, &config.adapter)? - before
+    );
 
     // During iperf3 execution there could be AER error reports on the console.
     // We need to skip these to ensure the JSON parses correctly.
@@ -817,7 +823,7 @@ fn link_partner_advertise_helper(
     }
 
     // change the link partner's advertisement and give time for the link to stop
-    let mut undo = UndoTracker::new();
+    let mut undo = UndoTracker::new(shell);
     ethtool::advertise(
         &mut partner,
         partner_adapter,
@@ -934,7 +940,7 @@ fn link_mode_advertise_helper(
     }
 
     // change our own advertisement
-    let mut undo = UndoTracker::new();
+    let mut undo = UndoTracker::new(shell);
     let test_info_result = ethtool::advertise(shell, adapter, advertisement, Some(&mut undo));
     if let Ok(Some(AdapterInfo { speed: Some(speed) })) = test_info_result {
         log::info!("Link negotiated at {speed}Mb/s");
@@ -1099,9 +1105,16 @@ fn iperf3_new_helper(
 ) -> Result<IperfResult, UnrecoverableError> {
     let ipaddr = &config.ipaddr;
 
+    let before = ethtool::statistics(shell, &config.adapter)?;
+
     let reply = shell.with_timeout_secs(45, |sh| {
         sh.cmd(&format!("iperf3 -c {ipaddr} -t 30 --json {args}"))
     })?;
+
+    log::info!(
+        "Packet counts: {:?}",
+        ethtool::statistics(shell, &config.adapter)? - before
+    );
 
     // During iperf3 execution there could be AER error reports on the console.
     // We need to skip these to ensure the JSON parses correctly.
@@ -1767,7 +1780,7 @@ pub fn disable_checksum_offload(
         failures += 1;
     }
 
-    let mut undo = UndoTracker::new();
+    let mut undo = UndoTracker::new(shell);
     ethtool::feature(shell, &mut undo, adapter, tx, false)?;
     ethtool::feature(shell, &mut undo, adapter, rx, false)?;
 
@@ -1799,7 +1812,7 @@ pub fn disable_tso(
         failures += 1;
     }
 
-    let mut undo = UndoTracker::new();
+    let mut undo = UndoTracker::new(shell);
     ethtool::feature(shell, &mut undo, adapter, feature, false)?;
 
     // This is like plans::quick_test() but has a *very* relaxed pass criteria

@@ -154,20 +154,36 @@ fn cycle(config: Config, args: CycleCli) -> Result<(), UnrecoverableError> {
 pub struct RunTestCli {
     #[command(flatten)]
     select: Selection,
+
+    /// List the tests in the selected test plan then exit
+    #[arg(long)]
+    list: bool,
 }
 
 fn run_test(
-    config: Config,
+    mut config: Config,
     args: RunTestCli,
     test_plan: TestPlan<NativeExecutor>,
 ) -> Result<(), RunTestError> {
+    // Filter if needed
+    let test_plan = args.select.filter_plan(test_plan);
+
+    if args.list {
+        test_plan.list();
+        return Ok(());
+    }
+
+    // Remove any remote-only configuration options that have been included in
+    // the config file. Some of these options confuse helper functions (such
+    // as auto-tuning) and should be ignored.
+    config.console = "".to_string();
+    config.partner_adapter = "".to_string();
+    config.power_cycle = "".to_string();
+
     let mut shell = NativeExecutor::new();
     tests::uname(&mut shell)?;
     shell.load_module(&config.module)?;
     tests::wait_for_ipv4(&config, &mut shell)?;
-
-    // Filter if needed
-    let test_plan = args.select.filter_plan(test_plan);
 
     match test_plan.run(&config, &mut shell) {
         Ok(0) => Ok(()),
@@ -278,13 +294,6 @@ fn app() -> Result<(), RunTestError> {
         config.module = module;
     }
 
-    // Remove any remote-only configuration options that have been included in
-    // the config file. Some of these options confuse helper functions (such
-    // as auto-tuning) and should be ignored.
-    config.console = "".to_string();
-    config.partner_adapter = "".to_string();
-    config.power_cycle = "".to_string();
-
     let result = match cli.command {
         Commands::SmokeTest(args) => run_test(config, args, plans::smoke_test()),
         Commands::Cycle(args) => cycle(config, args).map_err(RunTestError::from),
@@ -314,7 +323,7 @@ fn main() {
     };
 
     match &e {
-        RunTestError::Unrecoverable(_) => log::error!("{e:?}"),
+        RunTestError::Unrecoverable(err) => log::error!("{err:?}"),
         _ => log::error!("{e}"),
     }
 

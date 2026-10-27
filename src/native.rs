@@ -57,12 +57,14 @@ impl CommandExecutor for NativeExecutor {
                     bytes => bytes,
                 };
                 let mut s = String::new();
-                for ln in String::from_utf8_lossy(raw).split("\r\n") {
-                    log::debug!("  < {}", ln);
-                    s.push_str(ln);
-                    s.push('\n');
+                if !raw.is_empty() {
+                    for ln in String::from_utf8_lossy(raw).split("\r\n") {
+                        log::debug!("  < {}", ln);
+                        s.push_str(ln);
+                        s.push('\n');
+                    }
+                    s.pop(); // remove the trailing '\n' added by the loop
                 }
-                s.pop(); // remove the trailing '\n' added by the loop
 
                 log::trace!("{s:?}");
 

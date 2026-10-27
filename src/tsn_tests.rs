@@ -14,6 +14,7 @@ use crate::{
     ip,
     native::SudoExecutor,
     rtc_testbench::{self, TrafficClass, TrafficContext, TrafficStats},
+    split_whitespace_remainder,
     tests::DriverInfo,
     tracker::UndoTracker,
 };
@@ -22,19 +23,30 @@ use crate::{
 pub enum QdiscUseCase {
     Taprio,
     Mqprio,
+    MqprioWith5Queues,
     MqprioAndCbs,
-    MqprioAndEtf,
     MqprioAndCbsWith5Queues,
+    MqprioAndEtf,
     MqprioAndEtfWith5Queues,
+    MqprioAndTbsWith5Queues,
+    MqprioAndTbsAndFpeWith5Queues,
 }
 
 impl QdiscUseCase {
     /// Whether this use case requires an adapter with at least 5 TX queues.
     fn requires_5_queues(self) -> bool {
-        matches!(
-            self,
-            QdiscUseCase::MqprioAndCbsWith5Queues | QdiscUseCase::MqprioAndEtfWith5Queues
-        )
+        // avoid matches! since we want a compile error as QdiscUseCase evolves
+        match self {
+            QdiscUseCase::Taprio
+            | QdiscUseCase::Mqprio
+            | QdiscUseCase::MqprioAndCbs
+            | QdiscUseCase::MqprioAndEtf => false,
+            QdiscUseCase::MqprioWith5Queues
+            | QdiscUseCase::MqprioAndCbsWith5Queues
+            | QdiscUseCase::MqprioAndEtfWith5Queues
+            | QdiscUseCase::MqprioAndTbsWith5Queues
+            | QdiscUseCase::MqprioAndTbsAndFpeWith5Queues => true,
+        }
     }
 }
 
@@ -44,6 +56,8 @@ pub enum TsnSetupError {
     /// The test case cannot run because the adapter does not have enough
     /// queues (e.g. a 5-queue use case on a 4-queue adapter).
     Unsupported,
+    /// FPE verification failed.
+    FpeVerificationFailed,
     /// The setup could not be completed.
     Unrecoverable(UnrecoverableError),
 }
@@ -52,6 +66,7 @@ impl fmt::Display for TsnSetupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TsnSetupError::Unsupported => write!(f, "Adapter does not have enough queues"),
+            TsnSetupError::FpeVerificationFailed => write!(f, "FPE verification failed"),
             TsnSetupError::Unrecoverable(e) => e.fmt(f),
         }
     }
@@ -60,7 +75,7 @@ impl fmt::Display for TsnSetupError {
 impl std::error::Error for TsnSetupError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            TsnSetupError::Unsupported => None,
+            TsnSetupError::Unsupported | TsnSetupError::FpeVerificationFailed => None,
             TsnSetupError::Unrecoverable(e) => Some(e),
         }
     }
@@ -86,6 +101,10 @@ fn skip_if_unsupported<T>(
             log::info!("SKIPPED: {test} (adapter has fewer than 5 TX queues)");
             Ok(None)
         }
+        Err(TsnSetupError::FpeVerificationFailed) => {
+            log::info!("SKIPPED: {test} (adapter cannot verify FPE)");
+            Ok(None)
+        }
         Err(TsnSetupError::Unrecoverable(e)) => Err(e),
     }
 }
@@ -103,6 +122,9 @@ fn expect_supported<T>(
         Err(TsnSetupError::Unsupported) => {
             panic!("{test}: unexpected Unsupported error (adapter has fewer than 5 TX queues)")
         }
+        Err(TsnSetupError::FpeVerificationFailed) => {
+            panic!("{test}: unexpected FpeVerificationFailed error (adapter cannot verify FPE)")
+        }
         Err(TsnSetupError::Unrecoverable(e)) => Err(e),
     }
 }
@@ -114,6 +136,20 @@ pub enum PtpMode {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XdpMode {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxTimestampMode {
+    Enabled,
+    Disabled,
+}
+
+/// Whether a competing UDP stream is run alongside the RTC-Testbench to
+/// contend for egress bandwidth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompetitiveEgress {
     Enabled,
     Disabled,
 }
@@ -236,7 +272,7 @@ fn run_rtc_benchmark(
     config: &Config,
     shell: &mut impl CommandExecutor,
     partner: &mut SudoExecutor,
-    competitive_egress: bool,
+    competitive_egress: CompetitiveEgress,
 ) -> Result<BenchmarkResult, UnrecoverableError> {
     const DURATION_SECS: u64 = 60;
 
@@ -251,7 +287,7 @@ fn run_rtc_benchmark(
     shell.cmd("rm reference.log")?;
     partner.cmd("rm mirror.log")?;
 
-    if competitive_egress {
+    if competitive_egress == CompetitiveEgress::Enabled {
         shell.cmd(format!(
             "iperf3 -c {} -u -b 2G -i 0 -t {} & sleep 1",
             config.ipaddr,
@@ -311,11 +347,14 @@ fn setup_threaded_napi(
 
     tracker.sysfs(shell, format!("/sys/class/net/{interface}/threaded"), "1")?;
 
-    let pid_list = shell.cmd(format!(
-        "ps aux | grep napi | grep {interface} | awk '{{ print $2; }}'"
-    ))?;
+    let pid_list = shell.cmd(format!("ps aux | grep nap[i] | grep {interface}"))?;
 
-    for pid in pid_list.split_whitespace() {
+    for ln in pid_list.lines() {
+        let fields = split_whitespace_remainder::<11>(ln)
+            .ok_or(UnrecoverableError::message("Bad output from `ps aux`"))?;
+
+        let pid = fields[1];
+
         shell.cmd(format!("chrt -p -f 85 {pid}"))?;
         // No undo needed (assuming NAPI is not threaded *before* we are called
         // then the NAPI threads are will be destroyed when threading disabled)
@@ -356,11 +395,14 @@ fn boost_irq_threads(
     // let the updated threads fire up
     thread::sleep(Duration::from_secs(3));
 
-    let pid_list = shell.cmd(format!(
-        "ps aux | grep irq | grep {interface} | awk '{{ print $2; }}'"
-    ))?;
+    let pid_list = shell.cmd(format!("ps aux | grep ir[q] | grep {interface}"))?;
 
-    for pid in pid_list.split_whitespace() {
+    for ln in pid_list.lines() {
+        let fields = split_whitespace_remainder::<11>(ln)
+            .ok_or(UnrecoverableError::message("Bad output from `ps aux`"))?;
+
+        let pid = fields[1];
+
         shell.cmd(format!("chrt -p -f 85 {pid}"))?;
         tracker.add(format!("chrt -p -f 50 {pid}"));
     }
@@ -376,7 +418,7 @@ fn igc_setup(
     use_case: QdiscUseCase,
 ) -> Result<UndoTracker, UnrecoverableError> {
     let interface = interface.as_ref();
-    let mut tracker = UndoTracker::new();
+    let mut tracker = UndoTracker::new(shell);
 
     load_kernel_modules(shell)?;
     setup_threaded_napi(shell, interface, &mut tracker)?;
@@ -531,6 +573,7 @@ fn stmmac_setup_4q_egress_mqprio(
             //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
             "map  0  0  0  0  0  1  2  3  0  0  0  0  0  0  0  0 ",
             "queues 1@0 1@1 1@2 1@3 ",
+            "mode channel ",
             "hw 1"
         ),
         interface,
@@ -563,6 +606,7 @@ fn stmmac_setup_5q_egress_mqprio(
             //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
             "map  0  0  0  0  1  2  3  4  0  0  0  0  0  0  0  0 ",
             "queues 1@0 1@1 1@2 1@3 1@4 ",
+            "mode channel ",
             "hw 1"
         ),
         interface,
@@ -570,6 +614,47 @@ fn stmmac_setup_5q_egress_mqprio(
 
     shell.cmd(qdisc)?;
     tracker.add(format!("tc qdisc del dev {interface} root"));
+
+    Ok(())
+}
+
+/// Profinet-RT style configuration with FPE using simple static priority (mqprio).
+///
+/// Uses five TX queues assigned as follows:
+///
+///  * TX Q 0 - Everything else
+///  * TX Q 1 - UDP Low
+///  * TX Q 1 - DCP, LLDP, UDP High
+///  * TX Q 2 - RTA
+///  * TX Q 3 - RTC (express)
+fn stmmac_setup_5q_egress_mqprio_with_fpe(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), UnrecoverableError> {
+    let qdisc = format!(
+        concat!(
+            "tc qdisc replace dev {} handle 100 parent root mqprio ",
+            "num_tc 5 ",
+            //    0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+            "map  0  0  0  0  1  2  3  4  0  0  0  0  0  0  0  0 ",
+            "queues 1@0 1@1 1@2 1@3 1@4 ",
+            "fp P P P P E ",
+            "mode channel ",
+            "hw 1"
+        ),
+        interface,
+    );
+
+    shell.cmd(qdisc)?;
+    tracker.add(format!("tc qdisc del dev {interface} root"));
+
+    let _ = shell.cmd(format!(
+        "ethtool --set-mm {interface} pmac-enabled on tx-enabled on"
+    ));
+    tracker.add(format!(
+        "ethtool --set-mm {interface} pmac-enabled off tx-enabled off"
+    ));
 
     Ok(())
 }
@@ -682,7 +767,7 @@ fn stmmac_setup_5q_egress_mqprio_cbs(
 /// priority queue.
 ///
 /// For a TC956x with 4 queues it is not possible to offload to hardware.
-fn stmmac_setup_4q_egress_mqprio_tbs(
+fn stmmac_setup_4q_egress_mqprio_etf(
     shell: &mut impl CommandExecutor,
     interface: &str,
     tracker: &mut UndoTracker,
@@ -696,6 +781,28 @@ fn stmmac_setup_4q_egress_mqprio_tbs(
         interface
     ))?;
     tracker.add(format!("tc qdisc del dev {interface} parent 100:4"));
+
+    Ok(())
+}
+
+/// Extend the mqprio configuration by applying ETF scheduling to the highest
+/// priority queue.
+///
+/// For a TC956x with 5 queues we can offload queue #4 to hardware
+fn stmmac_setup_5q_egress_mqprio_etf(
+    shell: &mut impl CommandExecutor,
+    interface: &str,
+    tracker: &mut UndoTracker,
+) -> Result<(), UnrecoverableError> {
+    shell.cmd(format!(
+        concat!(
+            "tc qdisc replace dev {} parent 100:5 handle 105: etf ",
+            "clockid CLOCK_TAI ",
+            "delta 100000 "
+        ),
+        interface
+    ))?;
+    tracker.add(format!("tc qdisc del dev {interface} parent 100:5"));
 
     Ok(())
 }
@@ -722,6 +829,46 @@ fn stmmac_setup_5q_egress_mqprio_tbs(
 
     Ok(())
 }
+
+fn stmmac_setup_verify_fpe(
+    shell: (&mut impl CommandExecutor, &mut impl CommandExecutor),
+    interface: (&str, &str),
+    tracker: (&mut UndoTracker, &mut UndoTracker),
+) -> Result<(), TsnSetupError> {
+    let _ = shell.0.cmd(format!(
+        "ethtool --set-mm {} verify-enabled on",
+        interface.0
+    ))?;
+    tracker.0.add(format!(
+        "ethtool --set-mm {} verify-enabled off",
+        interface.0
+    ));
+
+    let _ = shell.1.cmd(format!(
+        "ethtool --set-mm {} verify-enabled on",
+        interface.1
+    ))?;
+    tracker.1.add(format!(
+        "ethtool --set-mm {} verify-enabled off",
+        interface.1
+    ));
+
+    thread::sleep(Duration::from_secs(1));
+
+    let reply = (
+        shell.0.cmd(format!("ethtool --show-mm {}", interface.0))?,
+        shell.1.cmd(format!("ethtool --show-mm {}", interface.0))?,
+    );
+
+    if reply.0.contains("Verification status: SUCCEEDED")
+        && reply.1.contains("Verification status: SUCCEEDED")
+    {
+        Ok(())
+    } else {
+        Err(TsnSetupError::FpeVerificationFailed)
+    }
+}
+
 /// Rx Assignment for any 4 queue use-case
 ///
 /// Queue assignment is the same as taprio assignment:
@@ -855,10 +1002,11 @@ fn stmmac_setup(
     use_case: QdiscUseCase,
 ) -> Result<UndoTracker, UnrecoverableError> {
     let interface = interface.as_ref();
-    let mut tracker = UndoTracker::new();
+    let mut tracker = UndoTracker::new(shell);
 
     load_kernel_modules(shell)?;
     napi_defer_hard_irqs(shell, interface, cycle_time_ns, &mut tracker)?;
+    //setup_threaded_napi(shell, interface, &mut tracker)?;
 
     tracker.add(format!("sleep 2"));
 
@@ -880,32 +1028,81 @@ fn stmmac_setup(
     // has fewer queues available)
     match use_case {
         QdiscUseCase::Taprio => {
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_egress_taprio(shell, interface, cycle_time_ns, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
         }
-        QdiscUseCase::Mqprio => {
-            stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
+        QdiscUseCase::MqprioWith5Queues if tx >= 5 => {
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_5q_egress_mqprio(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+        }
+        QdiscUseCase::Mqprio | QdiscUseCase::MqprioWith5Queues => {
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
         }
         QdiscUseCase::MqprioAndCbsWith5Queues if tx >= 5 => {
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_5q_egress_mqprio(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_5q_egress_mqprio_cbs(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
         }
         QdiscUseCase::MqprioAndCbs | QdiscUseCase::MqprioAndCbsWith5Queues => {
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_egress_mqprio_cbs(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
         }
         QdiscUseCase::MqprioAndEtfWith5Queues if tx >= 5 => {
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_5q_egress_mqprio(shell, interface, &mut tracker)?;
-            stmmac_setup_5q_egress_mqprio_tbs(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_5q_egress_mqprio_etf(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
         }
-        QdiscUseCase::MqprioAndEtf | QdiscUseCase::MqprioAndEtfWith5Queues => {
-            stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
-            stmmac_setup_4q_egress_mqprio_tbs(shell, interface, &mut tracker)?;
+        QdiscUseCase::MqprioAndTbsWith5Queues if tx >= 5 => {
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_5q_egress_mqprio(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_5q_egress_mqprio_tbs(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
             stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+        }
+        QdiscUseCase::MqprioAndTbsAndFpeWith5Queues if tx >= 5 => {
+            stmmac_setup_5q_egress_mqprio_with_fpe(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_5q_egress_mqprio_tbs(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+        }
+        QdiscUseCase::MqprioAndEtf
+        | QdiscUseCase::MqprioAndEtfWith5Queues
+        | QdiscUseCase::MqprioAndTbsWith5Queues
+        | QdiscUseCase::MqprioAndTbsAndFpeWith5Queues => {
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_4q_egress_mqprio(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_4q_egress_mqprio_etf(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
+            stmmac_setup_4q_ingress_queue(shell, interface, &mut tracker)?;
+            thread::sleep(Duration::from_secs(1));
         }
     }
 
@@ -942,7 +1139,7 @@ pub fn ptp_setup(
     let connection = shell.connection();
     log::debug!("Setting up PTP for the {connection} connection");
 
-    let mut tracker = UndoTracker::new();
+    let mut tracker = UndoTracker::new(shell);
 
     // Kill already running daemons (just in case)
     shell.cmd("killall ptp4l")?;
@@ -1016,10 +1213,10 @@ pub fn ptp_setup(
 ///
 /// PTP is considered settled once we have seen five consecutive one-second
 /// samples where `offsetFromMaster` is within ±100 ns.
-fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), UnrecoverableError> {
+fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<bool, UnrecoverableError> {
     const OFFSET_LIMIT_NS: f64 = 100.0;
     const REQUIRED_CONSECUTIVE_SAMPLES: u32 = 5;
-    const TIMEOUT: Duration = Duration::from_secs(300);
+    const TIMEOUT: Duration = Duration::from_secs(180);
 
     log::debug!(
         "Waiting for offsetFromMaster to stay within ±{OFFSET_LIMIT_NS} ns for \
@@ -1027,13 +1224,12 @@ fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), Unrecove
     );
 
     let mut consecutive = 0;
+    let mut zero = 0;
     let start = Instant::now();
     loop {
         let elapsed = start.elapsed();
         if elapsed >= TIMEOUT {
-            return Err(UnrecoverableError::message(
-                "timed out waiting for PTP to settle",
-            ));
+            return Ok(false);
         }
 
         let total_secs = elapsed.as_secs();
@@ -1046,8 +1242,12 @@ fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), Unrecove
 
             if offset.abs() <= OFFSET_LIMIT_NS {
                 consecutive += 1;
+                if offset == 0.0 {
+                    zero += 1;
+                }
             } else {
                 consecutive = 0;
+                zero = 0;
             }
         } else {
             log::info!("Failed to read offsetFromMaster, resetting streak");
@@ -1055,8 +1255,12 @@ fn wait_for_ptp_settled(shell: &mut impl CommandExecutor) -> Result<(), Unrecove
         }
 
         if consecutive >= REQUIRED_CONSECUTIVE_SAMPLES {
+            if zero >= REQUIRED_CONSECUTIVE_SAMPLES {
+                log::info!("PTP has not started up correctly");
+                return Ok(false);
+            }
             log::info!("PTP has settled");
-            return Ok(());
+            return Ok(true);
         }
 
         thread::sleep(Duration::from_secs(1));
@@ -1098,36 +1302,51 @@ pub fn tsn_setup(
 
     let context = traffic_context(config, shell, partner)?;
 
-    let mut partner_teardown = UndoTracker::new();
+    let mut partner_teardown = UndoTracker::new(partner);
     partner_teardown.append(mac_setup(
         partner,
         &context.mirror_interface,
         cycle_time_ns,
         use_case,
     )?);
-    if ptp == PtpMode::Enabled {
-        partner_teardown.append(ptp_setup(
-            partner,
-            &context.mirror_interface,
-            PtpRole::Master,
-        )?);
-    }
 
-    let mut shell_teardown = UndoTracker::new();
+    let mut shell_teardown = UndoTracker::new(shell);
+    shell_teardown.add(format!("killall rwmmio -USR1"));
+    shell_teardown.add(format!("sleep 1"));
     shell_teardown.append(mac_setup(
         shell,
         &context.reference_interface,
         cycle_time_ns,
         use_case,
     )?);
-    if ptp == PtpMode::Enabled {
-        shell_teardown.append(ptp_setup(
-            shell,
-            &context.reference_interface,
-            PtpRole::Slave,
-        )?);
 
-        wait_for_ptp_settled(shell)?;
+    if matches!(use_case, QdiscUseCase::MqprioAndTbsAndFpeWith5Queues) {
+        let _ = stmmac_setup_verify_fpe(
+            (shell, partner),
+            (&context.reference_interface, &context.mirror_interface),
+            (&mut shell_teardown, &mut partner_teardown),
+        )?;
+    }
+
+    shell.cmd("killall rwmmio -USR1")?;
+
+    if ptp == PtpMode::Enabled {
+        let (p, s) = loop {
+            let mut p = ptp_setup(partner, &context.mirror_interface, PtpRole::Master)?;
+            let mut s = ptp_setup(shell, &context.reference_interface, PtpRole::Slave)?;
+
+            let settled = wait_for_ptp_settled(shell)?;
+
+            if settled {
+                break (p, s);
+            }
+
+            s.restore(shell)?;
+            p.restore(partner)?;
+        };
+
+        partner_teardown.append(p);
+        shell_teardown.append(s);
     }
 
     Ok((context, shell_teardown, partner_teardown))
@@ -1224,12 +1443,12 @@ pub fn profinet_cyclic_4q_taprio(
             QdiscUseCase::Taprio,
             PtpMode::Enabled,
         ),
-        "profinet_cyclic_only",
+        "profinet_cyclic_4q_taprio",
     )?;
 
     config_cyclic_only(&context, shell, partner, cycle_time_ns)?;
 
-    let benchmark = run_rtc_benchmark(config, shell, partner, false)?;
+    let benchmark = run_rtc_benchmark(config, shell, partner, CompetitiveEgress::Disabled)?;
 
     partner_teardown.restore(partner)?;
     shell_teardown.restore(shell)?;
@@ -1260,6 +1479,7 @@ fn config_profinet_rt(
     partner: &mut impl CommandExecutor,
     cycle_time_ns: u64,
     xdp_mode: XdpMode,
+    tx_timestamp_mode: TxTimestampMode,
 ) -> Result<(), UnrecoverableError> {
     let mut rtc = TrafficClass::rtc()
         .set_vid(100)
@@ -1269,6 +1489,9 @@ fn config_profinet_rt(
         .set_thread_cpu_and_priority(3, 98);
     if xdp_mode == XdpMode::Enabled {
         rtc = rtc.set_xdp(false, true, true);
+    }
+    if tx_timestamp_mode == TxTimestampMode::Enabled {
+        rtc = rtc.set_tx_timestamp();
     }
 
     let mut rta = TrafficClass::rta()
@@ -1367,25 +1590,78 @@ fn config_profinet_rt(
     Ok(())
 }
 
-pub fn profinet_rt_nop(
+/// Run the RTC-Testbench with the profinet_rt traffic configuration.
+///
+/// When `use_case` is `None` the network device is left in its default
+/// configuration (the "nop" case); otherwise `tsn_setup` configures the qdisc
+/// and PTP before the benchmark runs.
+fn profinet_rt(
     config: &Config,
     shell: &mut impl CommandExecutor,
-) -> Result<u32, UnrecoverableError> {
+    use_case: Option<QdiscUseCase>,
+    xdp_mode: XdpMode,
+    tx_timestamp_mode: TxTimestampMode,
+    competitive_egress: CompetitiveEgress,
+) -> Result<BenchmarkResult, TsnSetupError> {
     let cycle_time_ns = 1_000_000;
 
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
-    let context = traffic_context(config, shell, partner)?;
+    let (context, mut shell_teardown, mut partner_teardown) = if let Some(use_case) = use_case {
+        tsn_setup(
+            config,
+            shell,
+            partner,
+            cycle_time_ns,
+            use_case,
+            PtpMode::Enabled,
+        )?
+    } else {
+        (
+            traffic_context(config, shell, partner)?,
+            UndoTracker::new(shell),
+            UndoTracker::new(partner),
+        )
+    };
 
-    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
+    config_profinet_rt(
+        &context,
+        shell,
+        partner,
+        cycle_time_ns,
+        xdp_mode,
+        tx_timestamp_mode,
+    )?;
 
-    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
+    let benchmark = run_rtc_benchmark(config, shell, partner, competitive_egress)?;
+
+    partner_teardown.restore(partner)?;
+    shell_teardown.restore(shell)?;
+
+    benchmark.log();
+
+    Ok(benchmark)
+}
+
+pub fn profinet_rt_nop(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    expect_supported(
+        profinet_rt(
+            config,
+            shell,
+            None,
+            XdpMode::Disabled,
+            TxTimestampMode::Disabled,
+            CompetitiveEgress::Disabled,
+        ),
+        "profinet_rt_nop",
+    )?;
 
     // This test does not have pass/fail criteria, to get a sense of TSN
     // performance we must eyeball the logs
-    benchmark.log();
-
     Ok(0)
 }
 
@@ -1393,34 +1669,20 @@ pub fn profinet_rt_4q_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let cycle_time_ns = 1_000_000;
-
-    let mut executor = SudoExecutor::new();
-    let partner = &mut executor;
-
-    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
-        tsn_setup(
+    expect_supported(
+        profinet_rt(
             config,
             shell,
-            partner,
-            cycle_time_ns,
-            QdiscUseCase::Taprio,
-            PtpMode::Enabled,
+            Some(QdiscUseCase::Taprio),
+            XdpMode::Enabled,
+            TxTimestampMode::Disabled,
+            CompetitiveEgress::Disabled,
         ),
-        "profinet_rt_taprio",
+        "profinet_rt_4q_taprio",
     )?;
-
-    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
-
-    let benchmark = run_rtc_benchmark(config, shell, partner, false)?;
-
-    partner_teardown.restore(partner)?;
-    shell_teardown.restore(shell)?;
 
     // This test does not have pass/fail criteria, to get a sense of TSN
     // performance we must eyeball the logs
-    benchmark.log();
-
     Ok(0)
 }
 
@@ -1428,34 +1690,20 @@ pub fn profinet_rt_4q_mqprio_xdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let cycle_time_ns = 1_000_000;
-
-    let mut executor = SudoExecutor::new();
-    let partner = &mut executor;
-
-    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
-        tsn_setup(
+    expect_supported(
+        profinet_rt(
             config,
             shell,
-            partner,
-            cycle_time_ns,
-            QdiscUseCase::Mqprio,
-            PtpMode::Enabled,
+            Some(QdiscUseCase::Mqprio),
+            XdpMode::Enabled,
+            TxTimestampMode::Disabled,
+            CompetitiveEgress::Disabled,
         ),
-        "profinet_rt_mqprio_xdp",
+        "profinet_rt_4q_mqprio_xdp",
     )?;
-
-    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Enabled)?;
-
-    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
-
-    partner_teardown.restore(partner)?;
-    shell_teardown.restore(shell)?;
 
     // This test does not have pass/fail criteria, to get a sense of TSN
     // performance we must eyeball the logs
-    benchmark.log();
-
     Ok(0)
 }
 
@@ -1463,33 +1711,20 @@ pub fn profinet_rt_4q_mqprio_noxdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let cycle_time_ns = 1_000_000;
-
-    let mut executor = SudoExecutor::new();
-    let partner = &mut executor;
-
-    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
-        tsn_setup(
+    expect_supported(
+        profinet_rt(
             config,
             shell,
-            partner,
-            cycle_time_ns,
-            QdiscUseCase::Mqprio,
-            PtpMode::Enabled,
+            Some(QdiscUseCase::Mqprio),
+            XdpMode::Disabled,
+            TxTimestampMode::Disabled,
+            CompetitiveEgress::Disabled,
         ),
-        "profinet_rt_mqprio_noxdp",
+        "profinet_rt_4q_mqprio_noxdp",
     )?;
-
-    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
-
-    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
-    partner_teardown.restore(partner)?;
-    shell_teardown.restore(shell)?;
 
     // This test does not have pass/fail criteria, to get a sense of TSN
     // performance we must eyeball the logs
-    benchmark.log();
-
     Ok(0)
 }
 
@@ -1497,33 +1732,20 @@ pub fn profinet_rt_4q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let cycle_time_ns = 1_000_000;
-
-    let mut executor = SudoExecutor::new();
-    let partner = &mut executor;
-
-    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
-        tsn_setup(
+    expect_supported(
+        profinet_rt(
             config,
             shell,
-            partner,
-            cycle_time_ns,
-            QdiscUseCase::MqprioAndCbs,
-            PtpMode::Enabled,
+            Some(QdiscUseCase::MqprioAndCbs),
+            XdpMode::Disabled,
+            TxTimestampMode::Disabled,
+            CompetitiveEgress::Disabled,
         ),
-        "profinet_rt_mqprio_and_cbs",
+        "profinet_rt_4q_cbs",
     )?;
-
-    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
-
-    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
-    partner_teardown.restore(partner)?;
-    shell_teardown.restore(shell)?;
 
     // This test does not have pass/fail criteria, to get a sense of TSN
     // performance we must eyeball the logs
-    benchmark.log();
-
     Ok(0)
 }
 
@@ -1531,33 +1753,68 @@ pub fn profinet_rt_5q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
-    let cycle_time_ns = 1_000_000;
-
-    let mut executor = SudoExecutor::new();
-    let partner = &mut executor;
-
-    let (context, mut shell_teardown, mut partner_teardown) = expect_supported(
-        tsn_setup(
+    let Some(_) = skip_if_unsupported(
+        profinet_rt(
             config,
             shell,
-            partner,
-            cycle_time_ns,
-            QdiscUseCase::MqprioAndCbs,
-            PtpMode::Enabled,
+            Some(QdiscUseCase::MqprioAndCbsWith5Queues),
+            XdpMode::Disabled,
+            TxTimestampMode::Disabled,
+            CompetitiveEgress::Disabled,
         ),
-        "profinet_rt_mqprio_and_cbs",
-    )?;
-
-    config_profinet_rt(&context, shell, partner, cycle_time_ns, XdpMode::Disabled)?;
-
-    let benchmark = run_rtc_benchmark(config, shell, partner, true)?;
-    partner_teardown.restore(partner)?;
-    shell_teardown.restore(shell)?;
+        "profinet_rt_5q_cbs",
+    )?
+    else {
+        return Ok(0);
+    };
 
     // This test does not have pass/fail criteria, to get a sense of TSN
     // performance we must eyeball the logs
-    benchmark.log();
+    Ok(0)
+}
 
+pub fn profinet_rt_4q_etf(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    expect_supported(
+        profinet_rt(
+            config,
+            shell,
+            Some(QdiscUseCase::MqprioAndEtf),
+            XdpMode::Enabled,
+            TxTimestampMode::Enabled,
+            CompetitiveEgress::Disabled,
+        ),
+        "profinet_rt_4q_etf",
+    )?;
+
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
+    Ok(0)
+}
+
+pub fn profinet_rt_5q_tbs(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let Some(_) = skip_if_unsupported(
+        profinet_rt(
+            config,
+            shell,
+            Some(QdiscUseCase::MqprioAndTbsWith5Queues),
+            XdpMode::Disabled,
+            TxTimestampMode::Enabled,
+            CompetitiveEgress::Disabled,
+        ),
+        "profinet_rt_5q_cbs",
+    )?
+    else {
+        return Ok(0);
+    };
+
+    // This test does not have pass/fail criteria, to get a sense of TSN
+    // performance we must eyeball the logs
     Ok(0)
 }
 
@@ -1657,7 +1914,7 @@ fn netperf_pair(
 
         (shell_teardown, partner_teardown)
     } else {
-        (UndoTracker::new(), UndoTracker::new())
+        (UndoTracker::new(shell), UndoTracker::new(partner))
     };
 
     partner.cmd("netserver")?;
@@ -1666,9 +1923,8 @@ fn netperf_pair(
     let reply = shell.with_timeout_secs(DURATION_UDP_HIGH + 30, |sh| {
         sh.cmd(format!(
             concat!(
-                "netperf -H {} -l {} -y 7 -t UDP_STREAM -- -m 1472 & ",
-                "sleep 1; ",
-                "netperf -H {} -l {} -y 5 -t UDP_STREAM -- -m 1472; ",
+                "netperf -H {} -s 1 -l {} -y 7 -t UDP_STREAM -- -m 1472 & ",
+                "netperf -H {} -s 2 -l {} -y 5 -t UDP_STREAM -- -m 1472 & ",
                 "wait"
             ),
             config.ipaddr, DURATION_RTC, config.ipaddr, DURATION_UDP_HIGH
@@ -1742,22 +1998,26 @@ pub fn netperf_pair_4q_taprio(
 ) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = expect_supported(
         netperf_pair(config, shell, Some(QdiscUseCase::Taprio)),
-        "netperf_pair_taprio",
+        "netperf_pair_4q_taprio",
     )?;
 
     let mut failures = 0;
 
     if hi < 125.0 || hi > 250.0 {
-        log::error!("netperf_pair_taprio: netperf high priority throughput is out of range: {hi}");
+        log::error!(
+            "netperf_pair_4q_taprio: netperf high priority throughput is out of range: {hi}"
+        );
         failures += 1;
     }
 
     if lo < 600.0 || lo > 1000.0 {
-        log::error!("netperf_pair_taprio: netperf low priority throughput is out of range: {lo}");
+        log::error!(
+            "netperf_pair_4q_taprio: netperf low priority throughput is out of range: {lo}"
+        );
         failures += 1;
     } else if lo < 750.0 {
         log::warn!(
-            "netperf_pair_taprio: low priority throughput is low (but within variability): {lo}"
+            "netperf_pair_4q_taprio: low priority throughput is low (but within variability): {lo}"
         );
     }
 
@@ -1774,22 +2034,25 @@ pub fn netperf_pair_4q_mqprio(
 ) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = expect_supported(
         netperf_pair(config, shell, Some(QdiscUseCase::Mqprio)),
-        "netperf_pair_mqprio",
+        "netperf_pair_4q_mqprio",
     )?;
 
     let mut failures = 0;
 
     if hi < 1000.0 {
-        log::error!("netperf_pair_mqprio: netperf high priority throughput is out of range: {hi}");
-        failures += 1;
+        log::error!(
+            "netperf_pair_4q_mqprio: netperf high priority throughput is out of range: {hi}"
+        );
     }
 
     if lo > 300.0 {
-        log::error!("netperf_pair_mqprio: netperf low priority throughput is out of range: {lo}");
+        log::error!(
+            "netperf_pair_4q_mqprio: netperf low priority throughput is out of range: {lo}"
+        );
         failures += 1;
     } else if lo > 150.0 {
         log::warn!(
-            "netperf_pair_mqprio: netperf low priority throughput is high (but within variability): {lo}"
+            "netperf_pair_4q_mqprio: netperf low priority throughput is high (but within variability): {lo}"
         );
     }
 
@@ -1812,22 +2075,18 @@ pub fn netperf_pair_4q_cbs(
 ) -> Result<u32, UnrecoverableError> {
     let (hi, lo) = expect_supported(
         netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbs)),
-        "netperf_pair_mqprio_and_cbs",
+        "netperf_pair_4q_cbs",
     )?;
 
     let mut failures = 0;
 
     if hi < 150.0 || hi > 200.0 {
-        log::error!(
-            "netperf_pair_mqprio_and_cbs: netperf high priority throughput is out of range: {hi}"
-        );
+        log::error!("netperf_pair_4q_cbs: netperf high priority throughput is out of range: {hi}");
         failures += 1;
     }
 
-    if lo < 500.0 || lo > 800.0 {
-        log::error!(
-            "netperf_pair_mqprio_and_cbs: netperf low priority throughput is out of range: {lo}"
-        );
+    if lo < 200.0 || lo > 800.0 {
+        log::error!("netperf_pair_4q_cbs: netperf low priority throughput is out of range: {lo}");
         failures += 1;
     }
 
@@ -1844,7 +2103,7 @@ pub fn netperf_pair_5q_cbs(
 ) -> Result<u32, UnrecoverableError> {
     let Some((hi, lo)) = skip_if_unsupported(
         netperf_pair(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues)),
-        "netperf_pair_mqprio_and_cbs_with_5_queues",
+        "netperf_pair_5q_cbs",
     )?
     else {
         return Ok(0);
@@ -1853,16 +2112,12 @@ pub fn netperf_pair_5q_cbs(
     let mut failures = 0;
 
     if hi < 150.0 || hi > 200.0 {
-        log::error!(
-            "netperf_pair_mqprio_and_cbs: netperf high priority throughput is out of range: {hi}"
-        );
+        log::error!("netperf_pair_5q_cbs: netperf high priority throughput is out of range: {hi}");
         failures += 1;
     }
 
-    if lo < 700.0 || lo > 800.0 {
-        log::error!(
-            "netperf_pair_mqprio_and_cbs: netperf low priority throughput is out of range: {lo}"
-        );
+    if lo < 500.0 || lo > 800.0 {
+        log::error!("netperf_pair_5q_cbs: netperf low priority throughput is out of range: {lo}");
         failures += 1;
     }
 
@@ -1875,7 +2130,7 @@ fn netperf_quad(
     shell: &mut impl CommandExecutor,
     use_case: Option<QdiscUseCase>,
 ) -> Result<(f64, f64, f64, f64), TsnSetupError> {
-    const DURATION_UDP_LOW: u64 = 10;
+    const DURATION_UDP_LOW: u64 = 20;
     const DURATION_UDP_HIGH: u64 = DURATION_UDP_LOW + 2;
     const DURATION_RTA: u64 = DURATION_UDP_HIGH + 2;
     const DURATION_RTC: u64 = DURATION_RTA + 2;
@@ -1895,7 +2150,7 @@ fn netperf_quad(
 
         (shell_teardown, partner_teardown)
     } else {
-        (UndoTracker::new(), UndoTracker::new())
+        (UndoTracker::new(shell), UndoTracker::new(partner))
     };
 
     partner.cmd("netserver")?;
@@ -1904,13 +2159,10 @@ fn netperf_quad(
     let reply = shell.with_timeout_secs(DURATION_UDP_LOW + 30, |sh| {
         sh.cmd(format!(
             concat!(
-                "netperf -H {} -l {} -y 7 -t UDP_STREAM -- -m 1472 & ",
-                "sleep 1; ",
-                "netperf -H {} -l {} -y 6 -t UDP_STREAM -- -m 1472 & ",
-                "sleep 1; ",
-                "netperf -H {} -l {} -y 5 -t UDP_STREAM -- -m 1472 & ",
-                "sleep 1; ",
-                "netperf -H {} -l {} -y 4 -t UDP_STREAM -- -m 1472; ",
+                "netperf -H {} -s 1 -l {} -y 7 -t UDP_STREAM -- -m 1472 & ",
+                "netperf -H {} -s 2 -l {} -y 6 -t UDP_STREAM -- -m 1472 & ",
+                "netperf -H {} -s 3 -l {} -y 5 -t UDP_STREAM -- -m 1472 & ",
+                "netperf -H {} -s 4 -l {} -y 4 -t UDP_STREAM -- -m 1472 & ",
                 "wait"
             ),
             config.ipaddr,
@@ -1934,12 +2186,17 @@ fn netperf_quad(
 
     for status in parse_netperf_throughput(&reply) {
         if status.message_size.is_some() {
-            match status.elapsed as u64 {
-                DURATION_UDP_LOW => udp_low = status.throughput,
-                DURATION_UDP_HIGH => udp_high = status.throughput,
-                DURATION_RTA => rta = status.throughput,
-                DURATION_RTC => rtc = status.throughput,
-                _ => {}
+            let elapsed = status.elapsed as u64;
+            if elapsed < DURATION_RTC + 2 {
+                if elapsed >= DURATION_RTC {
+                    rtc = status.throughput;
+                } else if elapsed >= DURATION_RTA {
+                    rta = status.throughput;
+                } else if elapsed >= DURATION_UDP_HIGH {
+                    udp_high = status.throughput;
+                } else if elapsed >= DURATION_UDP_LOW {
+                    udp_low = status.throughput;
+                }
             }
         }
     }
@@ -1996,28 +2253,28 @@ pub fn netperf_quad_4q_taprio(
 ) -> Result<u32, UnrecoverableError> {
     let (rtc, rta, udp_high, udp_low) = expect_supported(
         netperf_quad(config, shell, Some(QdiscUseCase::Taprio)),
-        "netperf_quad_taprio",
+        "netperf_quad_4q_taprio",
     )?;
 
     let mut failures = 0;
 
     if rtc > 250.0 {
-        log::error!("netperf_quad_taprio: rtc throughput is too high: {rtc}");
+        log::error!("netperf_quad_4q_taprio: rtc throughput is too high: {rtc}");
         failures += 1;
     }
 
     if rta > 250.0 {
-        log::error!("netperf_quad_taprio: rta throughput is too high: {rta}");
+        log::error!("netperf_quad_4q_taprio: rta throughput is too high: {rta}");
         failures += 1;
     }
 
     if udp_high > 1000.0 {
-        log::error!("netperf_quad_taprio: udp-high throughput is too high: {udp_high}");
+        log::error!("netperf_quad_4q_taprio: udp-high throughput is too high: {udp_high}");
         failures += 1;
     }
 
     if udp_low > 1000.0 {
-        log::error!("netperf_quad_taprio: udp-low throughput is too high: {udp_low}");
+        log::error!("netperf_quad_4q_taprio: udp-low throughput is too high: {udp_low}");
         failures += 1;
     }
 
@@ -2030,28 +2287,65 @@ pub fn netperf_quad_4q_mqprio(
 ) -> Result<u32, UnrecoverableError> {
     let (rtc, rta, udp_high, udp_low) = expect_supported(
         netperf_quad(config, shell, Some(QdiscUseCase::Mqprio)),
-        "netperf_quad_mqprio",
+        "netperf_quad_4q_mqprio",
     )?;
 
     let mut failures = 0;
 
     if rtc < 1000.0 {
-        log::error!("netperf_quad_mqprio: rtc throughput is too low: {rtc}");
+        log::error!("netperf_quad_4q_mqprio: rtc throughput is too low: {rtc}");
         failures += 1;
     }
 
     if rta > 150.0 {
-        log::error!("netperf_quad_mqprio: rta throughput is too high: {rta}");
+        log::error!("netperf_quad_4q_mqprio: rta throughput is too high: {rta}");
         failures += 1;
     }
 
     if udp_high > 150.0 {
-        log::error!("netperf_quad_mqprio: udp-high throughput is too high: {udp_high}");
+        log::error!("netperf_quad_4q_mqprio: udp-high throughput is too high: {udp_high}");
         failures += 1;
     }
 
     if udp_low > 150.0 {
-        log::error!("netperf_quad_mqprio: udp-low throughput is too high: {udp_low}");
+        log::error!("netperf_quad_4q_mqprio: udp-low throughput is too high: {udp_low}");
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+pub fn netperf_quad_5q_mqprio(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let Some((rtc, rta, udp_high, udp_low)) = skip_if_unsupported(
+        netperf_quad(config, shell, Some(QdiscUseCase::MqprioWith5Queues)),
+        "netperf_quad_5q_mqprio",
+    )?
+    else {
+        return Ok(0);
+    };
+
+    let mut failures = 0;
+
+    if rtc < 1000.0 {
+        log::error!("netperf_quad_5q_mqprio: rtc throughput is too low: {rtc}");
+        failures += 1;
+    }
+
+    if rta > 150.0 {
+        log::error!("netperf_quad_5q_mqprio: rta throughput is too high: {rta}");
+        failures += 1;
+    }
+
+    if udp_high > 150.0 {
+        log::error!("netperf_quad_5q_mqprio: udp-high throughput is too high: {udp_high}");
+        failures += 1;
+    }
+
+    if udp_low > 150.0 {
+        log::error!("netperf_quad_5q_mqprio: udp-low throughput is too high: {udp_low}");
         failures += 1;
     }
 
@@ -2064,23 +2358,23 @@ pub fn netperf_quad_4q_cbs(
 ) -> Result<u32, UnrecoverableError> {
     let (rtc, rta, udp_high, _) = expect_supported(
         netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbs)),
-        "netperf_quad_mqprio_and_cbs",
+        "netperf_quad_4q_cbs",
     )?;
 
     let mut failures = 0;
 
     if rtc > 200.0 {
-        log::error!("netperf_quad_mqprio_and_cbs: rtc throughput is too high: {rtc}");
+        log::error!("netperf_quad_4q_cbs: rtc throughput is too high: {rtc}");
         failures += 1;
     }
 
     if rta > 400.0 {
-        log::error!("netperf_quad_mqprio_and_cbs: rta throughput is too high: {rta}");
+        log::error!("netperf_quad_4q_cbs: rta throughput is too high: {rta}");
         failures += 1;
     }
 
     if udp_high > 600.0 {
-        log::error!("netperf_quad_mqprio_and_cbs: udp-high throughput is too high: {udp_high}");
+        log::error!("netperf_quad_4q_cbs: udp-high throughput is too high: {udp_high}");
         failures += 1;
     }
 
@@ -2093,7 +2387,7 @@ pub fn netperf_quad_5q_cbs(
 ) -> Result<u32, UnrecoverableError> {
     let Some((rtc, rta, udp_high, _)) = skip_if_unsupported(
         netperf_quad(config, shell, Some(QdiscUseCase::MqprioAndCbsWith5Queues)),
-        "netperf_quad_mqprio_and_cbs_with_5_queues",
+        "netperf_quad_5q_cbs",
     )?
     else {
         return Ok(0);
@@ -2102,17 +2396,17 @@ pub fn netperf_quad_5q_cbs(
     let mut failures = 0;
 
     if rtc > 200.0 {
-        log::error!("netperf_quad_mqprio_and_cbs: rtc throughput is too high: {rtc}");
+        log::error!("netperf_quad_5q_cbs: rtc throughput is too high: {rtc}");
         failures += 1;
     }
 
     if rta > 400.0 {
-        log::error!("netperf_quad_mqprio_and_cbs: rta throughput is too high: {rta}");
+        log::error!("netperf_quad_5q_cbs: rta throughput is too high: {rta}");
         failures += 1;
     }
 
     if udp_high > 600.0 {
-        log::error!("netperf_quad_mqprio_and_cbs: udp-high throughput is too high: {udp_high}");
+        log::error!("netperf_quad_5q_cbs: udp-high throughput is too high: {udp_high}");
         failures += 1;
     }
 
@@ -2123,7 +2417,11 @@ fn txrx_tsn(
     config: &Config,
     shell: &mut impl CommandExecutor,
     use_case: QdiscUseCase,
+    competitive_egress: CompetitiveEgress,
 ) -> Result<Stats<f64>, TsnSetupError> {
+    // 1500 frames at a 10ms cycle time.
+    const TRANSMIT_DURATION_SECS: u64 = 120;
+
     let mut executor = SudoExecutor::new();
     let partner = &mut executor;
 
@@ -2140,18 +2438,30 @@ fn txrx_tsn(
 
     partner.cmd("rm -f packet.log")?;
     partner.cmd(format!(
-        "setsid -f chrt -f 35 txrx-tsn --interface {} --afpkt --receive --frames-to-send=1200 --hw-timestamps > packet.log",
+        concat!(
+            "setsid -f -- ",
+            "trace-cmd record -b 131072 -e net:* -e qdisc:* -e skb:* -e sched:* -e irq:* -- ",
+            "chrt -f 35 -- ",
+            "txrx-tsn --interface {} --afpkt --receive --frames-to-send=1200 --hw-timestamps > packet.log",
+        ),
         config.partner_adapter
     ))?;
     partner_teardown.add(format!("killall txrx-tsn"));
 
     thread::sleep(Duration::from_secs(1));
 
-    shell.with_timeout_secs(30, |sh| {
+    if competitive_egress == CompetitiveEgress::Enabled {
+        shell.cmd(format!(
+            "setsid -f -- iperf3 -c {} -u -b 250M -i 0 -t {} > /dev/null",
+            config.ipaddr, TRANSMIT_DURATION_SECS
+        ))?;
+        shell_teardown.add(format!("killall netperf"));
+    }
+
+    shell.with_timeout_secs(TRANSMIT_DURATION_SECS, |sh| {
         sh.cmd(format!(
             concat!(
-                "chrt -f 35 ",
-                "strace -o txrx-tsn.log -- ",
+                "chrt -f 35 -- ",
                 "txrx-tsn --interface {} --afpkt --transmit --hw-timestamps ",
                 "--dst-mac-addr={} ",
                 "--frames-to-send=1500 --cycle-time=10000000 ",
@@ -2189,13 +2499,18 @@ fn txrx_tsn(
     Ok(stats)
 }
 
-pub fn txrx_tsn_4q_etf(
+pub fn txrx_tsn_4q_etf_network_idle(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
     let stats = expect_supported(
-        txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtf),
-        "txrx_tsn_mqprio_and_etf",
+        txrx_tsn(
+            config,
+            shell,
+            QdiscUseCase::MqprioAndEtf,
+            CompetitiveEgress::Disabled,
+        ),
+        "txrx_tsn_4q_etf",
     )?;
 
     let mut failures = 0;
@@ -2205,7 +2520,7 @@ pub fn txrx_tsn_4q_etf(
     // being late as they were issued to the DMA queue.
     if stats.count < 1200 {
         log::error!(
-            "txrx_tsn_mqprio_and_etf: Expected >1200 samples, got {}",
+            "txrx_tsn_4q_etf_network_idle: Expected >1200 samples, got {}",
             stats.count
         );
         failures += 1;
@@ -2213,7 +2528,7 @@ pub fn txrx_tsn_4q_etf(
 
     if stats.mean > 0.0 {
         log::error!(
-            "txrx_tsn_mqprio_and_etf: Mean is positive, this almost certainly means the etf delta is too small: {} ns",
+            "txrx_tsn_4q_etf_network_idle: Mean is positive, this almost certainly means the etf delta is too small: {} ns",
             stats.mean
         );
         failures += 1;
@@ -2221,7 +2536,7 @@ pub fn txrx_tsn_4q_etf(
 
     if stats.std_dev > 15000.0 {
         log::error!(
-            "txrx_tsn_mqprio_and_etf: Std dev is too large: {} ns",
+            "txrx_tsn_4q_etf_network_idle: Std dev is too large: {} ns",
             stats.std_dev
         );
         failures += 1;
@@ -2230,13 +2545,64 @@ pub fn txrx_tsn_4q_etf(
     Ok(failures)
 }
 
-pub fn txrx_tsn_5q_tbs(
+pub fn txrx_tsn_4q_etf_network_busy(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let stats = expect_supported(
+        txrx_tsn(
+            config,
+            shell,
+            QdiscUseCase::MqprioAndEtf,
+            CompetitiveEgress::Enabled,
+        ),
+        "txrx_tsn_4q_etf",
+    )?;
+
+    let mut failures = 0;
+
+    // If packets go missing that's usually because they were still valid (before
+    // deadline) when issued by userspace but were dropped by the kernel for
+    // being late as they were issued to the DMA queue.
+    if stats.count < 1200 {
+        log::error!(
+            "txrx_tsn_4q_etf_network_busy: Expected >1200 samples, got {}",
+            stats.count
+        );
+        failures += 1;
+    }
+
+    if stats.mean > 0.0 {
+        log::error!(
+            "txrx_tsn_4q_etf_network_busy: Mean is positive, this almost certainly means the etf delta is too small: {} ns",
+            stats.mean
+        );
+        failures += 1;
+    }
+
+    if stats.std_dev > 15000.0 {
+        log::error!(
+            "txrx_tsn_4q_etf_network_busy: Std dev is too large: {} ns",
+            stats.std_dev
+        );
+        failures += 1;
+    }
+
+    Ok(failures)
+}
+
+pub fn txrx_tsn_5q_etf_network_idle(
     config: &Config,
     shell: &mut impl CommandExecutor,
 ) -> Result<u32, UnrecoverableError> {
     let Some(stats) = skip_if_unsupported(
-        txrx_tsn(config, shell, QdiscUseCase::MqprioAndEtfWith5Queues),
-        "txrx_tsn_mqprio_and_etf_with_5_queues",
+        txrx_tsn(
+            config,
+            shell,
+            QdiscUseCase::MqprioAndEtfWith5Queues,
+            CompetitiveEgress::Disabled,
+        ),
+        "txrx_tsn_5q_etf_network_idle",
     )?
     else {
         return Ok(0);
@@ -2246,7 +2612,7 @@ pub fn txrx_tsn_5q_tbs(
 
     if stats.count < 1200 {
         log::error!(
-            "txrx_tsn_mqprio_and_etf_with_5_queues: Expected >1200 samples, got {}",
+            "txrx_tsn_5q_etf_network_idle: Expected >1200 samples, got {}",
             stats.count
         );
         failures += 1;
@@ -2258,7 +2624,7 @@ pub fn txrx_tsn_5q_tbs(
     // to transmit so negative arrival times should be impossible)
     if stats.min < 0.0 {
         log::error!(
-            "txrx_tsn_mqprio_and_etf_with_5_queues: Min delta is negative: {} ns",
+            "txrx_tsn_5q_etf_network_idle: Min delta is negative: {} ns",
             stats.min
         );
         failures += 1;
@@ -2274,7 +2640,235 @@ pub fn txrx_tsn_5q_tbs(
     // packet to complete (at 2.5G).
     if stats.std_dev > 500.0 {
         log::error!(
-            "txrx_tsn_mqprio_and_etf: Std dev is too large: {} ns",
+            "txrx_tsn_5q_etf_network_idle: Std dev is too large: {} ns",
+            stats.std_dev
+        );
+        failures += 1;
+    }
+    Ok(failures)
+}
+
+pub fn txrx_tsn_5q_etf_network_busy(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let Some(stats) = skip_if_unsupported(
+        txrx_tsn(
+            config,
+            shell,
+            QdiscUseCase::MqprioAndTbsWith5Queues,
+            CompetitiveEgress::Enabled,
+        ),
+        "txrx_tsn_5q_etf_network_busy",
+    )?
+    else {
+        return Ok(0);
+    };
+
+    let mut failures = 0;
+
+    if stats.count < 1200 {
+        log::error!(
+            "txrx_tsn_5q_etf_network_busy: Expected >1200 samples, got {}",
+            stats.count
+        );
+        failures += 1;
+    }
+
+    // Packets should not be transmitted early than their launch time so the
+    // min delta should always be positive (the driver will round launch times
+    // down to a 256ns boundary... but the smallest packet takes at least 268ns
+    // to transmit so negative arrival times should be impossible)
+    if stats.min < 0.0 {
+        log::error!(
+            "txrx_tsn_5q_etf_network_busy: Min delta is negative: {} ns",
+            stats.min
+        );
+        failures += 1;
+    }
+
+    // Packet timings should be fairly consistent (although note that stmmac
+    // launch times are quantized to 256ns so there will always be nanosecond
+    // level jitter)
+    //
+    // Note also that this level of jitter is only achievable on an otherwise
+    // idle NIC. When there is other network traffic than, without frame
+    // preemption, high priority packets must wait up to ~5µs for an 1500 bytes
+    // packet to complete (at 2.5G).
+    if stats.std_dev > 500.0 {
+        log::error!(
+            "txrx_tsn_5q_etf_network_busy: Std dev is too large: {} ns",
+            stats.std_dev
+        );
+        failures += 1;
+    }
+    Ok(failures)
+}
+
+pub fn txrx_tsn_5q_tbs_network_idle(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let Some(stats) = skip_if_unsupported(
+        txrx_tsn(
+            config,
+            shell,
+            QdiscUseCase::MqprioAndTbsWith5Queues,
+            CompetitiveEgress::Disabled,
+        ),
+        "txrx_tsn_5q_tbs_network_idle",
+    )?
+    else {
+        return Ok(0);
+    };
+
+    let mut failures = 0;
+
+    if stats.count < 1200 {
+        log::error!(
+            "txrx_tsn_5q_tbs_network_idle: Expected >1200 samples, got {}",
+            stats.count
+        );
+        failures += 1;
+    }
+
+    // Packets should not be transmitted early than their launch time so the
+    // min delta should always be positive (the driver will round launch times
+    // down to a 256ns boundary... but the smallest packet takes at least 268ns
+    // to transmit so negative arrival times should be impossible)
+    if stats.min < 0.0 {
+        log::error!(
+            "txrx_tsn_5q_tbs_network_idle: Min delta is negative: {} ns",
+            stats.min
+        );
+        failures += 1;
+    }
+
+    // Packet timings should be fairly consistent (although note that stmmac
+    // launch times are quantized to 256ns so there will always be nanosecond
+    // level jitter)
+    //
+    // Note also that this level of jitter is only achievable on an otherwise
+    // idle NIC. When there is other network traffic than, without frame
+    // preemption, high priority packets must wait up to ~5µs for an 1500 bytes
+    // packet to complete (at 2.5G).
+    if stats.std_dev > 500.0 {
+        log::error!(
+            "txrx_tsn_5q_tbs_network_idle: Std dev is too large: {} ns",
+            stats.std_dev
+        );
+        failures += 1;
+    }
+    Ok(failures)
+}
+
+pub fn txrx_tsn_5q_tbs_network_busy(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let Some(stats) = skip_if_unsupported(
+        txrx_tsn(
+            config,
+            shell,
+            QdiscUseCase::MqprioAndTbsWith5Queues,
+            CompetitiveEgress::Enabled,
+        ),
+        "txrx_tsn_5q_tbs_network_busy",
+    )?
+    else {
+        return Ok(0);
+    };
+
+    let mut failures = 0;
+
+    if stats.count < 1200 {
+        log::error!(
+            "txrx_tsn_5q_tbs_network_busy: Expected >1200 samples, got {}",
+            stats.count
+        );
+        failures += 1;
+    }
+
+    // Packets should not be transmitted early than their launch time so the
+    // min delta should always be positive (the driver will round launch times
+    // down to a 256ns boundary... but the smallest packet takes at least 268ns
+    // to transmit so negative arrival times should be impossible)
+    if stats.min < 0.0 {
+        log::error!(
+            "txrx_tsn_5q_tbs_network_busy: Min delta is negative: {} ns",
+            stats.min
+        );
+        failures += 1;
+    }
+
+    // Packet timings should be fairly consistent (although note that stmmac
+    // launch times are quantized to 256ns so there will always be nanosecond
+    // level jitter)
+    //
+    // Note also that this level of jitter is only achievable on an otherwise
+    // idle NIC. When there is other network traffic than, without frame
+    // preemption, high priority packets must wait up to ~5µs for an 1500 bytes
+    // packet to complete (at 2.5G).
+    if stats.std_dev > 500.0 {
+        log::error!(
+            "txrx_tsn_5q_tbs_network_busy: Std dev is too large: {} ns",
+            stats.std_dev
+        );
+        failures += 1;
+    }
+    Ok(failures)
+}
+
+pub fn txrx_tsn_5q_tbs_fpe_network_busy(
+    config: &Config,
+    shell: &mut impl CommandExecutor,
+) -> Result<u32, UnrecoverableError> {
+    let Some(stats) = skip_if_unsupported(
+        txrx_tsn(
+            config,
+            shell,
+            QdiscUseCase::MqprioAndTbsAndFpeWith5Queues,
+            CompetitiveEgress::Enabled,
+        ),
+        "txrx_tsn_5q_tbs_fpe_network_busy",
+    )?
+    else {
+        return Ok(0);
+    };
+
+    let mut failures = 0;
+
+    if stats.count < 1200 {
+        log::error!(
+            "txrx_tsn_5q_tbs_fpe_network_busy: Expected >1200 samples, got {}",
+            stats.count
+        );
+        failures += 1;
+    }
+
+    // Packets should not be transmitted early than their launch time so the
+    // min delta should always be positive (the driver will round launch times
+    // down to a 256ns boundary... but the smallest packet takes at least 268ns
+    // to transmit so negative arrival times should be impossible)
+    if stats.min < 0.0 {
+        log::error!(
+            "txrx_tsn_5q_tbs_fpe_network_busy: Min delta is negative: {} ns",
+            stats.min
+        );
+        failures += 1;
+    }
+
+    // Packet timings should be fairly consistent (although note that stmmac
+    // launch times are quantized to 256ns so there will always be nanosecond
+    // level jitter)
+    //
+    // Note also that this level of jitter is only achievable on an otherwise
+    // idle NIC. When there is other network traffic than, without frame
+    // preemption, high priority packets must wait up to ~5µs for an 1500 bytes
+    // packet to complete (at 2.5G).
+    if stats.std_dev > 500.0 {
+        log::error!(
+            "txrx_tsn_5q_tbs_fpe_network_busy: Std dev is too large: {} ns",
             stats.std_dev
         );
         failures += 1;

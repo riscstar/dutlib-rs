@@ -12,7 +12,6 @@ use std::{backtrace::Backtrace, fmt, io};
 /// recoverable form when this is appropriate.
 ///
 /// [`CommandExecutor`]: crate::CommandExecutor
-#[derive(Debug)]
 pub struct UnrecoverableError {
     kind: UnrecoverableErrorKind,
     backtrace: Backtrace,
@@ -58,6 +57,15 @@ impl UnrecoverableError {
     /// The backtrace captured when this error was created.
     pub fn backtrace(&self) -> &Backtrace {
         &self.backtrace
+    }
+}
+
+impl fmt::Debug for UnrecoverableError {
+    /// Print the error followed by its backtrace, using [`Backtrace`]'s
+    /// `Display` implementation (the readable multi-line form).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.kind)?;
+        write!(f, "Backtrace:\n{}", self.backtrace)
     }
 }
 

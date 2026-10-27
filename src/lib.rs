@@ -142,3 +142,32 @@ pub fn read_config(board: Option<&str>) -> Result<Config, UnrecoverableError> {
 
     Ok(config)
 }
+
+/// Splits the input string into `N` whitespace-separated fields, with the
+/// remainder collected into the `N`-th slot.
+///
+/// Returns `None` if the input does not contain `N` whitespace-separated fields.
+pub fn split_whitespace_remainder<const N: usize>(input: &str) -> Option<[&str; N]> {
+    if N == 0 {
+        return Some([""; N]);
+    }
+
+    let mut rest = input.trim_start();
+    let mut array = [""; N];
+
+    // Collect first N - 1 fields
+    for slot in &mut array[..N - 1] {
+        let word = rest.split_whitespace().next()?;
+        *slot = word;
+        rest = rest[word.len()..].trim_start();
+    }
+
+    // Collect remainder into the N-th slot
+    let remainder = rest.trim_end();
+    if remainder.is_empty() {
+        return None;
+    }
+    array[N - 1] = remainder;
+
+    Some(array)
+}
