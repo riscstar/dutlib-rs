@@ -171,6 +171,7 @@ dependencies = [
  "rolling-stats",
  "serde",
  "serde_json",
+ "syn",
  "toml",
  "yaml_serde",
 ]

@@ -16,6 +16,12 @@ pub mod tracker;
 pub mod tsn_tests;
 pub mod tuning;
 
+/// Rustdoc lookup for the test functions, generated at build time by
+/// `build.rs` (see `DOC_SOURCES` there for the list of scanned files).
+pub mod doc_lookup {
+    include!(concat!(env!("OUT_DIR"), "/doc_lookup.rs"));
+}
+
 pub use error::{RunTestError, UnrecoverableError, UnrecoverableErrorKind};
 
 /// Version string reported by `--version`. It contains the output of
