@@ -167,6 +167,7 @@ dependencies = [
  "errno",
  "expectrl",
  "log",
+ "proc-macro2",
  "regex",
  "rolling-stats",
  "serde",

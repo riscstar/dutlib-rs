@@ -1,5 +1,5 @@
 use crate::{
-    CommandExecutor, Config, UnrecoverableError, tests,
+    CommandExecutor, Config, UnrecoverableError, doc_lookup, tests,
     tsn_tests::{self},
     tuning,
 };
@@ -69,6 +69,21 @@ fn join_path(path: &str, name: &str) -> String {
     }
 }
 
+/// Render an ATX markdown heading prefix of the given level. Markdown only
+/// supports six heading levels so deeper levels are clamped.
+fn heading(level: usize) -> String {
+    "#".repeat(level.clamp(1, 6))
+}
+
+/// Render an italic "Link to source" markdown line for a test function.
+fn source_link(entry: &doc_lookup::DocEntry) -> String {
+    format!(
+        "*Link to source: [{}]({})*",
+        entry.path,
+        doc_lookup::source_url(entry)
+    )
+}
+
 #[derive(Debug)]
 struct TestCase<T: CommandExecutor> {
     name: &'static str,
@@ -129,14 +144,7 @@ impl<T: CommandExecutor> Clone for TestSet<T> {
     }
 }
 
-impl<T: CommandExecutor> TestSet<T> {
-    fn name(&self) -> &'static str {
-        match self {
-            TestSet::TestCase(test_case) => test_case.name,
-            TestSet::TestPlan(test_plan) => test_plan.name,
-        }
-    }
-}
+impl<T: CommandExecutor> TestSet<T> {}
 
 #[derive(Debug)]
 pub struct TestPlan<T: CommandExecutor> {
@@ -193,14 +201,41 @@ impl<T: CommandExecutor> TestPlan<T> {
         })
     }
 
+    /// Filter the plan, keeping only the test cases whose name matches the
+    /// predicate.
+    ///
+    /// Nested plans are filtered recursively and are dropped when none of the
+    /// test cases they contain match.
     pub fn filter(&self, predicate: impl Fn(&str) -> bool) -> TestPlan<T> {
+        self.filter_by(&predicate)
+    }
+
+    /// The implementation of [`TestPlan::filter`]. The predicate is passed by
+    /// reference (rather than by value) so that the recursive calls do not
+    /// monomorphise a new closure type at every level.
+    fn filter_by(&self, predicate: &dyn Fn(&str) -> bool) -> TestPlan<T> {
         Self {
             name: self.name,
             plan: self
                 .plan
                 .iter()
-                .filter(|ts| predicate(ts.name()))
-                .map(|ts| ts.clone())
+                .filter_map(|ts| match ts {
+                    TestSet::TestCase(test_case) => {
+                        if predicate(test_case.name) {
+                            Some(TestSet::TestCase(test_case.clone()))
+                        } else {
+                            None
+                        }
+                    }
+                    TestSet::TestPlan(test_plan) => {
+                        let filtered = test_plan.filter_by(predicate);
+                        if filtered.plan.is_empty() {
+                            None
+                        } else {
+                            Some(TestSet::TestPlan(filtered))
+                        }
+                    }
+                })
                 .collect(),
         }
     }
@@ -252,6 +287,194 @@ impl<T: CommandExecutor> TestPlan<T> {
                 TestSet::TestPlan(test_plan) => test_plan.list_with_path(&name),
             }
         }
+    }
+
+    /// Print the plan as markdown.
+    ///
+    /// Every plan and test case is rendered as a heading using its local
+    /// name (for example `all-tests`, `smoke-test`, `ping`). Heading levels
+    /// follow the nesting depth of the plan, clamped to the six levels markdown
+    /// supports. Each test is followed by an italic "Link to source" line
+    /// pointing at the function's definition, then by its rustdoc comment
+    /// (collected at build time by `build.rs`) passed through unmodified.
+    /// Tests without a rustdoc comment are listed with the link only.
+    /// Blocks are separated by blank lines.
+    pub fn describe(&self) {
+        let mut blocks: Vec<String> = Vec::new();
+        self.collect_markdown(1, &mut blocks);
+
+        if !blocks.is_empty() {
+            println!("{}", blocks.join("\n\n"));
+        }
+    }
+
+    /// Collect the plan as markdown blocks (headings and rustdoc paragraphs).
+    ///
+    /// `level` is the markdown heading level of this plan; its test cases use
+    /// `level + 1`. Empty plans contribute nothing so that no headings are
+    /// emitted without content beneath them.
+    fn collect_markdown(&self, level: usize, blocks: &mut Vec<String>) {
+        if self.plan.is_empty() {
+            return;
+        }
+
+        blocks.push(format!("{} {}", heading(level), self.name));
+
+        for t in self.plan.iter() {
+            match t {
+                TestSet::TestCase(test_case) => {
+                    blocks.push(format!("{} {}", heading(level + 1), test_case.name));
+                    if let Some(entry) = doc_lookup::lookup_entry(test_case.name) {
+                        blocks.push(source_link(entry));
+                        if let Some(doc) = entry.doc {
+                            blocks.push(doc.to_owned());
+                        }
+                    }
+                }
+                TestSet::TestPlan(test_plan) => test_plan.collect_markdown(level + 1, blocks),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+    use crate::native::NativeExecutor;
+
+    fn dummy_test(_: &Config, _: &mut NativeExecutor) -> Result<u32, UnrecoverableError> {
+        Ok(0)
+    }
+
+    #[test]
+    fn describe_renders_markdown() {
+        let mut plan = TestPlan::<NativeExecutor>::new("outer");
+        plan.test_case("ping", tests::ping);
+        plan.test_case("definitely_not_a_test_function", dummy_test);
+
+        let mut blocks: Vec<String> = Vec::new();
+        plan.collect_markdown(1, &mut blocks);
+
+        // Headings use local names, each test links back to its source
+        // (italic, before the doc), the rustdoc is passed through unmodified
+        // and unknown tests get a heading with no content.
+        let entry = doc_lookup::lookup_entry("ping").unwrap();
+        assert_eq!(
+            blocks.join("\n\n"),
+            format!(
+                "# outer\n\n## ping\n\n{}\n\n{}\n\n## definitely_not_a_test_function",
+                source_link(entry),
+                entry.doc.unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn filter_recurses_into_nested_plans() {
+        let mut inner = TestPlan::<NativeExecutor>::new("inner");
+        inner.test_case("ping", tests::ping);
+        inner.test_case("ping_1s", tests::ping_1s);
+        inner.test_case("verify_log_messages", tests::verify_log_messages);
+
+        let mut outer = TestPlan::<NativeExecutor>::new("outer");
+        outer.test_plan(inner);
+        outer.test_case("verify_log_messages", tests::verify_log_messages);
+
+        let filtered = outer.filter(|name| name.contains("ping"));
+
+        // The nested plan is retained with only its matching tests and the
+        // top-level verify_log_messages test case is dropped.
+        assert_eq!(filtered.plan.len(), 1);
+        match &filtered.plan[0] {
+            TestSet::TestPlan(sub_plan) => {
+                assert_eq!(sub_plan.name, "inner");
+                let names: Vec<&str> = sub_plan
+                    .plan
+                    .iter()
+                    .map(|ts| match ts {
+                        TestSet::TestCase(test_case) => test_case.name,
+                        _ => panic!("expected only test cases"),
+                    })
+                    .collect();
+                assert_eq!(names, ["ping", "ping_1s"]);
+            }
+            _ => panic!("expected the filtered sub-plan to be retained"),
+        }
+    }
+
+    #[test]
+    fn filter_drops_empty_nested_plans() {
+        let mut inner = TestPlan::<NativeExecutor>::new("inner");
+        inner.test_case("verify_log_messages", tests::verify_log_messages);
+
+        let mut outer = TestPlan::<NativeExecutor>::new("outer");
+        outer.test_plan(inner);
+
+        let filtered = outer.filter(|name| name.contains("ping"));
+        assert!(filtered.plan.is_empty());
+    }
+
+    #[test]
+    fn describe_renders_nested_plans_with_deeper_headings() {
+        let mut inner = TestPlan::<NativeExecutor>::new("inner");
+        inner.test_case("ping", tests::ping);
+
+        let mut outer = TestPlan::<NativeExecutor>::new("outer");
+        outer.test_plan(inner);
+
+        let mut blocks: Vec<String> = Vec::new();
+        outer.collect_markdown(1, &mut blocks);
+
+        let entry = doc_lookup::lookup_entry("ping").unwrap();
+        assert_eq!(
+            blocks,
+            [
+                "# outer".to_string(),
+                "## inner".to_string(),
+                "### ping".to_string(),
+                source_link(entry),
+                entry.doc.unwrap().to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn describe_links_undocumented_tests() {
+        let mut plan = TestPlan::<NativeExecutor>::new("quick-test");
+        plan.test_case("iperf3_bidir", tests::iperf3_bidir);
+
+        let mut blocks: Vec<String> = Vec::new();
+        plan.collect_markdown(1, &mut blocks);
+
+        // iperf3_bidir has no rustdoc comment but is still captured, so it
+        // gets a heading and a source link with no documentation.
+        let entry = doc_lookup::lookup_entry("iperf3_bidir").unwrap();
+        assert!(entry.doc.is_none());
+        assert_eq!(
+            blocks,
+            [
+                "# quick-test".to_string(),
+                "## iperf3_bidir".to_string(),
+                source_link(entry),
+            ]
+        );
+    }
+
+    #[test]
+    fn describe_of_an_empty_plan_produces_nothing() {
+        let plan = TestPlan::<NativeExecutor>::new("empty");
+
+        let mut blocks: Vec<String> = Vec::new();
+        plan.collect_markdown(1, &mut blocks);
+
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn heading_levels_are_clamped() {
+        assert_eq!(heading(1), "#");
+        assert_eq!(heading(6), "######");
+        assert_eq!(heading(7), "######");
     }
 }
 

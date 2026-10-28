@@ -158,6 +158,10 @@ pub struct RunTestCli {
     /// List the tests in the selected test plan then exit
     #[arg(long)]
     list: bool,
+
+    /// Describe the tests as markdown in the selected test plan then exit
+    #[arg(long)]
+    describe: bool,
 }
 
 fn run_test(
@@ -170,6 +174,10 @@ fn run_test(
 
     if args.list {
         test_plan.list();
+        return Ok(());
+    }
+    if args.describe {
+        test_plan.describe();
         return Ok(());
     }
 

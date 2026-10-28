@@ -38,6 +38,16 @@ fn version() -> String {
     format!("{describe} ({date})")
 }
 
+/// The full hash of the current top commit, used to pin source links to a
+/// permanent URL. Falls back to the branch name `main` when git metadata is
+/// unavailable (e.g. building from a source tarball) so that the links keep
+/// working, just unpinned.
+fn revision() -> String {
+    git(&["rev-parse", "HEAD"])
+        .filter(|hash| !hash.is_empty())
+        .unwrap_or_else(|| "main".to_string())
+}
+
 fn main() {
     // Re-run whenever the working tree or the checked-out commit changes so
     // that the embedded version (including the `-dirty` suffix) stays current.
@@ -85,13 +95,18 @@ const DOC_SOURCES: &[DocSource] = &[
     },
 ];
 
-/// A rustdoc'd free function found by [`generate_doc_lookup`].
+/// A free function found by [`generate_doc_lookup`].
 struct DocEntry {
     namespace: String,
     name: String,
     path: String,
-    doc: String,
+    file: String,
+    line: u32,
+    doc: Option<String>,
 }
+
+/// The GitHub repository used for the source links in the generated module.
+const SOURCE_REPO_URL: &str = "https://github.com/riscstar/dutlib-rs/blob";
 
 /// Extract the text of a rustdoc comment (the `///` lines) from a list of
 /// attributes. Returns `None` for undocumented items.
@@ -113,7 +128,15 @@ fn doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
         let syn::Lit::Str(lit) = &expr.lit else {
             continue;
         };
-        for line in lit.value().lines() {
+        let value = lit.value();
+        if value.is_empty() {
+            // A bare `///` line is stored as an empty string, for which
+            // `str::lines()` yields nothing; keep it so that paragraph
+            // breaks survive extraction.
+            lines.push(String::new());
+            continue;
+        }
+        for line in value.lines() {
             // `/// text` is stored as `" text"`; strip the single leading
             // space the same way rustdoc does.
             let line = line.strip_prefix(' ').unwrap_or(line);
@@ -134,28 +157,34 @@ fn is_cfg_test(attr: &syn::Attribute) -> bool {
     }
 }
 
-/// Recursively collect documented free functions from `items`, qualifying
-/// their names with `namespace`. Methods (functions inside `impl` blocks) and
-/// functions nested inside other functions are not free functions and are
-/// skipped.
-fn collect_entries(items: &[Item], namespace: &str, entries: &mut Vec<DocEntry>) {
+/// Recursively collect free functions from `items`, qualifying their names
+/// with `namespace`. Every free function is collected, whether or not it has
+/// a rustdoc comment (`doc` is `None` for undocumented functions). Methods
+/// (functions inside `impl` blocks) and functions nested inside other
+/// functions are not free functions and are skipped.
+///
+/// `file` is the path the items were parsed from; it is recorded alongside
+/// each function so that callers can link back to the definition.
+fn collect_entries(items: &[Item], file: &str, namespace: &str, entries: &mut Vec<DocEntry>) {
     for item in items {
         match item {
             Item::Fn(func) => {
-                if let Some(doc) = doc_comment(&func.attrs) {
-                    let name = func.sig.ident.to_string();
-                    let path = if namespace.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{namespace}::{name}")
-                    };
-                    entries.push(DocEntry {
-                        namespace: namespace.to_owned(),
-                        name,
-                        path,
-                        doc,
-                    });
-                }
+                let name = func.sig.ident.to_string();
+                let path = if namespace.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{namespace}::{name}")
+                };
+                entries.push(DocEntry {
+                    namespace: namespace.to_owned(),
+                    name,
+                    path,
+                    file: file.to_owned(),
+                    // The span of the function's identifier gives the
+                    // line the definition starts on (1-based).
+                    line: func.sig.ident.span().start().line as u32,
+                    doc: doc_comment(&func.attrs),
+                });
             }
             Item::Mod(module) => {
                 // Skip unit test modules and `mod foo;` declarations (their
@@ -169,7 +198,7 @@ fn collect_entries(items: &[Item], namespace: &str, entries: &mut Vec<DocEntry>)
                     } else {
                         format!("{namespace}::{}", module.ident)
                     };
-                    collect_entries(items, &nested_namespace, entries);
+                    collect_entries(items, file, &nested_namespace, entries);
                 }
             }
             _ => {}
@@ -208,9 +237,9 @@ fn derive_namespace(path: &str) -> String {
     parts.join("::")
 }
 
-/// Generate `doc_lookup.rs` in `OUT_DIR`: a table of every rustdoc'd free
-/// function found in [`DOC_SOURCES`] plus a `lookup()` helper that finds a
-/// doc comment by bare symbol name or by namespace-qualified path.
+/// Generate `doc_lookup.rs` in `OUT_DIR`: a table of every free function
+/// found in [`DOC_SOURCES`] plus a `lookup()` helper that finds a doc
+/// comment by bare symbol name or by namespace-qualified path.
 fn generate_doc_lookup() {
     let mut entries: Vec<DocEntry> = Vec::new();
 
@@ -226,7 +255,7 @@ fn generate_doc_lookup() {
             Some(namespace) => namespace.to_owned(),
             None => derive_namespace(source.path),
         };
-        collect_entries(&ast.items, &namespace, &mut entries);
+        collect_entries(&ast.items, source.path, &namespace, &mut entries);
     }
 
     // Sort by qualified path so that the generated file is deterministic.
@@ -248,8 +277,11 @@ fn render(entries: &[DocEntry]) -> String {
         out.push_str(&format!("//   {}\n", source.path));
     }
 
+    // The templates below are raw strings so that the quotes in the
+    // generated code need no escaping.
+    let source_url_base = format!("{SOURCE_REPO_URL}/{}/", revision());
     out.push_str(
-        "
+        r##"
 /// A documented free function extracted at build time by `build.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DocEntry {
@@ -260,38 +292,64 @@ pub struct DocEntry {
     pub namespace: &'static str,
     /// Fully qualified path, e.g. `tests::ping`.
     pub path: &'static str,
-    /// The rustdoc comment with the `///` markers stripped.
-    pub doc: &'static str,
+    /// Source file containing the function, relative to the project root
+    /// (e.g. `src/tests.rs`).
+    pub file: &'static str,
+    /// Line number of the function definition (1-based).
+    pub line: u32,
+    /// The rustdoc comment with the `///` markers stripped. `None` for
+    /// undocumented functions.
+    pub doc: Option<&'static str>,
 }
 
+/// The git revision the crate was built from: the full hash of the current
+/// top commit, or `main` when building without git metadata.
+pub const REVISION: &str = "##,
+    );
+    out.push_str(&format!("{:?};\n", revision()));
+    out.push_str(
+        r##"
+/// Base URL (with a trailing slash) for links to the source definitions,
+/// pinned to [`REVISION`].
+pub const SOURCE_URL_BASE: &str = "##,
+    );
+    out.push_str(&format!("{:?};\n", source_url_base));
+    out.push_str(
+        r##"
 /// Every documented free function found in the scanned files, sorted by
 /// [`DocEntry::path`].
 pub static ENTRIES: &[DocEntry] = &[
-",
+"##,
     );
 
     for entry in entries {
+        let doc = match &entry.doc {
+            Some(doc) => format!("Some({})", string_literal(doc)),
+            None => "None".to_string(),
+        };
         out.push_str(&format!(
-            "    DocEntry {{\n        name: {},\n        namespace: {},\n        path: {},\n        doc: {},\n    }},\n",
+            "    DocEntry {{\n        name: {},\n        namespace: {},\n        path: {},\n        file: {},\n        line: {},\n        doc: {},\n    }},\n",
             string_literal(&entry.name),
             string_literal(&entry.namespace),
             string_literal(&entry.path),
-            string_literal(&entry.doc),
+            string_literal(&entry.file),
+            entry.line,
+            doc,
         ));
     }
     out.push_str("];\n");
 
     out.push_str(
-        "
-/// Look up the rustdoc comment for a symbol.
+        r##"
+/// Look up the [`DocEntry`] for a symbol.
 ///
 /// `symbol` may be either a bare function name (`ping`) or a
 /// namespace-qualified path (`tests::ping`). A bare name only resolves when
 /// it is unambiguous across all the scanned files; if it matches several
 /// entries `None` is returned and [`ENTRIES`] can be used to list the
 /// candidates.
-pub fn lookup(symbol: &str) -> Option<&'static str> {
-    let (namespace, name) = match symbol.rsplit_once(\"::\") {
+pub fn lookup_entry(symbol: &str) -> Option<&'static DocEntry> {
+    let (namespace, name) = match symbol.rsplit_once("::") {
         Some((namespace, name)) => (Some(namespace), name),
         None => (None, symbol),
     };
@@ -309,7 +367,20 @@ pub fn lookup(symbol: &str) -> Option<&'static str> {
         // A bare name matching several entries cannot be resolved.
         return None;
     }
-    Some(first.doc)
+    Some(first)
+}
+
+/// Look up the rustdoc comment for a symbol (see [`lookup_entry`] for the
+/// accepted forms). Returns `None` both for unknown symbols and for
+/// functions without a rustdoc comment; use [`lookup_entry`] to
+/// distinguish the two.
+pub fn lookup(symbol: &str) -> Option<&'static str> {
+    lookup_entry(symbol).and_then(|entry| entry.doc)
+}
+
+/// The permanent URL of the definition of `entry`.
+pub fn source_url(entry: &DocEntry) -> String {
+    format!("{}{}#L{}", SOURCE_URL_BASE, entry.file, entry.line)
 }
 
 #[cfg(test)]
@@ -319,7 +390,7 @@ mod tests {
     #[test]
     fn lookup_resolves_qualified_paths() {
         for entry in ENTRIES {
-            assert_eq!(lookup(entry.path), Some(entry.doc), \"{}\", entry.path);
+            assert_eq!(lookup(entry.path), entry.doc, "{}", entry.path);
         }
     }
 
@@ -328,21 +399,49 @@ mod tests {
         for entry in ENTRIES {
             let occurrences = ENTRIES.iter().filter(|other| other.name == entry.name).count();
             if occurrences == 1 {
-                assert_eq!(lookup(entry.name), Some(entry.doc), \"{}\", entry.name);
+                assert_eq!(lookup(entry.name), entry.doc, "{}", entry.name);
             }
         }
     }
 
     #[test]
     fn lookup_rejects_unknown_symbols() {
-        assert_eq!(lookup(\"definitely_not_a_function\"), None);
+        assert_eq!(lookup("definitely_not_a_function"), None);
         assert_eq!(
-            lookup(\"definitely_not_a_namespace::definitely_not_a_function\"),
+            lookup("definitely_not_a_namespace::definitely_not_a_function"),
             None
         );
     }
+
+    #[test]
+    fn every_entry_has_a_source_location() {
+        for entry in ENTRIES {
+            assert!(entry.line > 0, "{}", entry.path);
+        }
+    }
+
+    #[test]
+    fn source_urls_point_at_the_revision() {
+        assert!(SOURCE_URL_BASE.contains(REVISION));
+
+        let entry = &ENTRIES[0];
+        let url = source_url(entry);
+        assert!(url.starts_with(SOURCE_URL_BASE), "{url}");
+        assert!(url.ends_with(&format!("#L{}", entry.line)), "{url}");
+    }
+
+    #[test]
+    fn paragraph_breaks_are_preserved() {
+        // Guard against doc extraction collapsing the blank lines between
+        // paragraphs: at least one scanned function has a multi-paragraph
+        // rustdoc.
+        assert!(
+            ENTRIES.iter().any(|entry| entry.doc.is_some_and(|doc| doc.contains("\n\n"))),
+            "no multi-paragraph rustdoc found; blank lines may be collapsed"
+        );
+    }
 }
-",
+"##,
     );
 
     out

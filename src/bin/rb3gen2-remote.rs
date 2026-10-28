@@ -212,6 +212,11 @@ pub struct RunTestCli {
     /// List the tests in the selected test plan then exit
     #[arg(long)]
     list: bool,
+
+    /// List the tests with their rustdoc descriptions as markdown in the
+    /// selected test plan then exit
+    #[arg(long)]
+    describe: bool,
 }
 
 fn run_test(
@@ -224,6 +229,10 @@ fn run_test(
 
     if args.list {
         test_plan.list();
+        return Ok(());
+    }
+    if args.describe {
+        test_plan.describe();
         return Ok(());
     }
 
@@ -248,12 +257,37 @@ fn run_test(
 
 #[derive(Debug, Parser)]
 pub struct AllTestsCli {
+    #[command(flatten)]
+    select: Selection,
+
     /// Reboot before running any tests
     #[arg(short, long)]
     reboot: bool,
+
+    /// List the tests in the test plan then exit
+    #[arg(long)]
+    list: bool,
+
+    /// List the tests with their rustdoc descriptions as markdown in the
+    /// test plan then exit
+    #[arg(long)]
+    describe: bool,
 }
 fn all_tests(config: Config, args: AllTestsCli) -> Result<(), UnrecoverableError> {
     let plan = all_test_plans();
+
+    // Filter if needed
+    let plan = args.select.filter_plan(plan);
+
+    if args.list {
+        plan.list();
+        return Ok(());
+    }
+    if args.describe {
+        plan.describe();
+        return Ok(());
+    }
+
     let mut board = DeviceUnderTest::new(&config.console, &config.power_cycle);
     if args.reboot {
         let console = board.console()?;
