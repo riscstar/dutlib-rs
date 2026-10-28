@@ -288,6 +288,8 @@ pub fn iperf3_bidir_tuneable(
     )
 }
 
+/// Measure TCP throughput in both directions concurrently and compare it
+/// against thresholds based on the negotiated link speed.
 pub fn iperf3_bidir(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -305,6 +307,8 @@ pub fn iperf3_bidir(
     iperf3_bidir_tuneable(config, shell, tthresh, rthresh)
 }
 
+/// Measure TCP receive throughput and check it against a threshold derived
+/// from the negotiated link speed.
 pub fn iperf3_rx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -321,6 +325,8 @@ pub fn iperf3_rx(
     })
 }
 
+/// Measure TCP transmit throughput and check it against a threshold derived
+/// from the negotiated link speed.
 pub fn iperf3_tx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -337,6 +343,8 @@ pub fn iperf3_tx(
     })
 }
 
+/// Run the adapter driver's ethtool self-test and report any failed test
+/// results. Adapters that do not support the expected self-test are skipped.
 pub fn ethtool_selftest(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -446,7 +454,11 @@ pub fn ethtool_selftest(
     Ok(failures)
 }
 
-/// Verify the log messages
+/// Check the kernel log for unexpected warnings and errors.
+///
+/// There is an allow list to cover messages emitted by upstream code outside
+/// the scope of the test. Log verification is also used to check that
+/// the PHY is interrupt driven
 pub fn verify_log_messages(
     _config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1140,6 +1152,8 @@ fn iperf3_new_helper(
     }
 }
 
+/// Measure bidirectional TCP throughput in five-second intervals and check
+/// both per-interval and total throughput against link-speed-based thresholds.
 pub fn iperf3_intervals_bidir(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1212,6 +1226,8 @@ pub fn iperf3_intervals_bidir(
     Ok(failures)
 }
 
+/// Measure TCP transmit throughput in five-second intervals and check
+/// per-interval and total throughput against link-speed-based thresholds.
 pub fn iperf3_intervals_tx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1268,6 +1284,8 @@ pub fn iperf3_intervals_tx(
     Ok(failures)
 }
 
+/// Measure TCP receive throughput in five-second intervals and check
+/// per-interval and total throughput against link-speed-based thresholds.
 pub fn iperf3_intervals_rx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1324,6 +1342,8 @@ pub fn iperf3_intervals_rx(
     Ok(failures)
 }
 
+/// Send bidirectional UDP traffic at 80% of the link rate and report packet
+/// loss in both directions.
 pub fn iperf3_udp_bidir(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1465,6 +1485,7 @@ pub fn iperf3_udp_tx_all_queues(
     Ok(failures)
 }
 
+/// Send UDP traffic at 80% of the link rate and check transmit packet loss.
 pub fn iperf3_udp_tx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1502,6 +1523,7 @@ pub fn iperf3_udp_tx(
     Ok(failures)
 }
 
+/// Receive UDP traffic at 80% of the link rate and check receive packet loss.
 pub fn iperf3_udp_rx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1542,6 +1564,8 @@ pub fn iperf3_udp_rx(
     Ok(failures)
 }
 
+/// Measure bidirectional TCP throughput with eight parallel iperf3 streams,
+/// checking per-stream fairness and aggregate throughput.
 pub fn iperf3_x16_bidir(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1620,6 +1644,8 @@ pub fn iperf3_x16_bidir(
     Ok(failures)
 }
 
+/// Measure TCP transmit throughput with sixteen parallel iperf3 streams,
+/// checking per-stream fairness and aggregate throughput.
 pub fn iperf3_x16_tx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1674,6 +1700,8 @@ pub fn iperf3_x16_tx(
     Ok(failures)
 }
 
+/// Measure TCP receive throughput with sixteen parallel iperf3 streams,
+/// checking per-stream fairness and aggregate throughput.
 pub fn iperf3_x16_rx(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1732,6 +1760,12 @@ pub fn iperf3_x16_rx(
 // System integration tests
 //
 
+/// Exercise core suspend/resume and then run the quick connectivity and
+/// throughput checks. Skips the suspend test if the kernel lacks
+/// `CONFIG_PM_DEBUG`.
+///
+/// This test is typically run twice to verify that nothing during resume causes
+/// a later suspend to fail.
 pub fn suspend_resume(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1760,6 +1794,8 @@ pub fn suspend_resume(
     Ok(failures)
 }
 
+/// Disable TX and RX checksum offload, run connectivity and (relaxed)
+/// throughput checks, restore the original settings, and recheck the link.
 pub fn disable_checksum_offload(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1798,6 +1834,8 @@ pub fn disable_checksum_offload(
     Ok(failures)
 }
 
+/// Disable TCP segmentation offload (TSO), run connectivity and relaxed
+/// throughput checks, restore the original setting, and recheck the link.
 pub fn disable_tso(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1843,6 +1881,9 @@ pub fn ethtool_show_eee(
     Ok(status.to_string())
 }
 
+/// Check Energy Efficient Ethernet (EEE) at the default link mode, disable
+/// and re-enable it while checking connectivity, and restore the advertised
+/// link modes if the test changed them.
 pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
@@ -1901,6 +1942,8 @@ pub fn eee(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Unr
     Ok(failures)
 }
 
+/// Check path-MTU behavior between the DUT and link partner at MTUs 1000,
+/// 2000, and 1500 using do-not-fragment pings.
 pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, UnrecoverableError> {
     let mut failures = 0;
 
@@ -1936,6 +1979,8 @@ pub fn mtu(config: &Config, shell: &mut impl CommandExecutor) -> Result<u32, Unr
     Ok(failures)
 }
 
+/// Create VLAN 8 interfaces on the DUT and link partner, run the smoke-test
+/// plan over the VLAN link, and remove the temporary interfaces.
 pub fn vlan_smoke_test(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2032,6 +2077,8 @@ fn ptp_check_offsets(offsets: &[i64]) -> u32 {
     failures
 }
 
+/// Run the DUT as a PTP hardware-clock slave while the link partner acts as
+/// master, then check that the measured master offsets converge within limits.
 pub fn ptp_receiver(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2063,6 +2110,8 @@ pub fn ptp_receiver(
     Ok(ptp_check_offsets(&offsets))
 }
 
+/// Run the DUT as a PTP hardware-clock master while the link partner acts as
+/// slave, then check that the measured master offsets converge within limits.
 pub fn ptp_transmitter(
     config: &Config,
     shell: &mut impl CommandExecutor,

@@ -1424,6 +1424,8 @@ fn config_cyclic_only(
     Ok(())
 }
 
+/// Configure four-queue taprio scheduling and run the cyclic-only Profinet
+/// RTC benchmark, checking that the DUT receives RTC traffic.
 pub fn profinet_cyclic_4q_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1644,6 +1646,8 @@ fn profinet_rt(
     Ok(benchmark)
 }
 
+/// Run the Profinet real-time benchmark without changing the device's qdisc.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_nop(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1665,6 +1669,9 @@ pub fn profinet_rt_nop(
     Ok(0)
 }
 
+/// Run the Profinet real-time benchmark with four-queue taprio scheduling
+/// and XDP enabled.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1686,6 +1693,9 @@ pub fn profinet_rt_4q_taprio(
     Ok(0)
 }
 
+/// Run the Profinet real-time benchmark with four-queue mqprio scheduling
+/// and XDP enabled.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_mqprio_xdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1707,6 +1717,9 @@ pub fn profinet_rt_4q_mqprio_xdp(
     Ok(0)
 }
 
+/// Run the Profinet real-time benchmark with four-queue mqprio scheduling
+/// and XDP disabled, for comparison with the XDP-enabled case.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_mqprio_noxdp(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1728,6 +1741,9 @@ pub fn profinet_rt_4q_mqprio_noxdp(
     Ok(0)
 }
 
+/// Run the Profinet real-time benchmark with four-queue mqprio and CBS
+/// shaping.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1749,6 +1765,9 @@ pub fn profinet_rt_4q_cbs(
     Ok(0)
 }
 
+/// Run the Profinet real-time benchmark with five-queue mqprio and CBS
+/// shaping, skipping the case if the adapter does not have five TX queues.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_5q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1773,6 +1792,9 @@ pub fn profinet_rt_5q_cbs(
     Ok(0)
 }
 
+/// Run the Profinet real-time benchmark with four-queue mqprio and ETF,
+/// enabling XDP and transmit hardware timestamps.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_etf(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -1794,6 +1816,9 @@ pub fn profinet_rt_4q_etf(
     Ok(0)
 }
 
+/// Run the Profinet real-time benchmark with five-queue mqprio and TBS,
+/// skipping the case if the adapter lacks the required queues.
+/// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_5q_tbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2068,7 +2093,7 @@ pub fn netperf_pair_4q_mqprio(
 /// Note that on TC956x devices, only the high priority stream will be using
 /// hardware offloading for CBS. The low priority stream is on a queue that does
 /// not support hardware offload and therefore has a relaxed lower bandwidth
-/// limit (since software CBS performance can be unpredictable).
+/// limit (because software CBS is over-zealous in limiting bandwidth).
 pub fn netperf_pair_4q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2093,10 +2118,14 @@ pub fn netperf_pair_4q_cbs(
     Ok(failures)
 }
 
-/// As `netperf_pair_mqprio_and_cbs` but with 5 queues instead of 4.
+/// Run two competing UDP streams the on a mqprio configured network device that
+/// uses CBS (Credit-Based Shaping) to limit the bandwidth of each stream.
 ///
-/// This allows queue 1 to 3 (where queue 1 has no hardware CBS support) to be
-/// replaced with queue 2 to 4 (all of which have hardware CBS support).
+/// The two streams are competing but both have CBS shaping that should dictate
+/// the throughput of each.
+///
+/// On TC956x devices all queues will have CBS offload support. The test will be
+/// skipped  automatically if the MAC is not configured with five TX queues.
 pub fn netperf_pair_5q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2207,6 +2236,8 @@ fn netperf_quad(
     Ok(priorities)
 }
 
+/// Run four concurrent UDP streams on the default device configuration and
+/// check traffic is fairly distributed.
 pub fn netperf_quad_nop(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2247,6 +2278,8 @@ pub fn netperf_quad_nop(
 
     Ok(failures)
 }
+/// Run four concurrent UDP streams with four-queue taprio scheduling and
+/// check that each traffic class stays within its configured throughput limit.
 pub fn netperf_quad_4q_taprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2281,6 +2314,8 @@ pub fn netperf_quad_4q_taprio(
     Ok(failures)
 }
 
+/// Run four concurrent UDP streams with four-queue mqprio priority scheduling
+/// and check that the highest priority queue dominates the network traffic.
 pub fn netperf_quad_4q_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2315,6 +2350,10 @@ pub fn netperf_quad_4q_mqprio(
     Ok(failures)
 }
 
+/// Run four concurrent UDP streams with five-queue mqprio priority scheduling
+/// and check that the highest priority queue dominates the network traffic.
+///
+/// Automatically skipped if five queues are unavailable.
 pub fn netperf_quad_5q_mqprio(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2352,6 +2391,12 @@ pub fn netperf_quad_5q_mqprio(
     Ok(failures)
 }
 
+/// Run four concurrent UDP streams with four-queue mqprio and CBS shaping,
+/// checking the throughput limits for RTC, RTA, and high-priority UDP
+/// are not breached.
+///
+/// Note that on TC956x devices this test involved a mix of hardware and software
+/// CBS shaping.
 pub fn netperf_quad_4q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2381,6 +2426,11 @@ pub fn netperf_quad_4q_cbs(
     Ok(failures)
 }
 
+/// Run four concurrent UDP streams with five-queue mqprio and CBS shaping,
+/// checking the throughput limits for the RTC, RTA, and high-priority UDP
+/// traffic classes.
+///
+/// Automatically skipped if five queues are unavailable.
 pub fn netperf_quad_5q_cbs(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2499,6 +2549,9 @@ fn txrx_tsn(
     Ok(stats)
 }
 
+/// Measure timestamped launch-time traffic with four-queue mqprio with ETF
+/// on the highest priority queue. Network is otherwise idle.
+/// Checks packet count, timing offset and jitter.
 pub fn txrx_tsn_4q_etf_network_idle(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2545,6 +2598,11 @@ pub fn txrx_tsn_4q_etf_network_idle(
     Ok(failures)
 }
 
+/// Measure timestamped launch-time traffic with four-queue mqprio with ETF
+/// on the highest priority queue. Competing UDP traffic loads egress.
+/// Checks packet count, timing offset and jitter.
+///
+/// Automatically skipped if five queues are unavailable.
 pub fn txrx_tsn_4q_etf_network_busy(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2591,6 +2649,11 @@ pub fn txrx_tsn_4q_etf_network_busy(
     Ok(failures)
 }
 
+/// Measure timestamped launch-time traffic with five-queue mqprio with ETF
+/// on the highest priority queue. Network is otherwise idle.
+/// Checks packet count, timing offset and jitter.
+///
+/// Automatically skipped if five queues are unavailable.
 pub fn txrx_tsn_5q_etf_network_idle(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2648,6 +2711,11 @@ pub fn txrx_tsn_5q_etf_network_idle(
     Ok(failures)
 }
 
+/// Measure timestamped launch-time traffic with five-queue mqprio with ETF
+/// on the highest priority queue. Competing UDP traffic loads egress.
+/// Checks packet count, timing offset and jitter.
+///
+/// Automatically skipped if five queues are unavailable.
 pub fn txrx_tsn_5q_etf_network_busy(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2705,6 +2773,11 @@ pub fn txrx_tsn_5q_etf_network_busy(
     Ok(failures)
 }
 
+/// Measure timestamped launch-time traffic with five-queue mqprio with TBS
+/// on the highest priority queue. Network is otherwise idle.
+/// Checks packet count, timing offset and jitter.
+///
+/// Automatically skipped if five queues are unavailable.
 pub fn txrx_tsn_5q_tbs_network_idle(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2762,6 +2835,11 @@ pub fn txrx_tsn_5q_tbs_network_idle(
     Ok(failures)
 }
 
+/// Measure timestamped launch-time traffic with five-queue mqprio with TBS
+/// on the highest priority queue. Competing UDP traffic loads egress.
+/// Checks packet count, timing offset and jitter.
+///
+/// Automatically skipped if five queues are unavailable.
 pub fn txrx_tsn_5q_tbs_network_busy(
     config: &Config,
     shell: &mut impl CommandExecutor,
@@ -2819,6 +2897,10 @@ pub fn txrx_tsn_5q_tbs_network_busy(
     Ok(failures)
 }
 
+/// Measure timestamped launch-time traffic with five-queue TBS and frame
+/// preemption enabled while competing UDP traffic loads egress. Checks packet
+/// count, early transmissions, and timing jitter; skips if five queues are
+/// unavailable.
 pub fn txrx_tsn_5q_tbs_fpe_network_busy(
     config: &Config,
     shell: &mut impl CommandExecutor,

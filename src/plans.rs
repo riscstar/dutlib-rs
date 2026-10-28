@@ -439,24 +439,19 @@ mod plan_tests {
     }
 
     #[test]
-    fn describe_links_undocumented_tests() {
+    fn describe_handles_unindexed_test_symbols() {
         let mut plan = TestPlan::<NativeExecutor>::new("quick-test");
-        plan.test_case("iperf3_bidir", tests::iperf3_bidir);
+        plan.test_case("unindexed_test", dummy_test);
 
         let mut blocks: Vec<String> = Vec::new();
         plan.collect_markdown(1, &mut blocks);
 
-        // iperf3_bidir has no rustdoc comment but is still captured, so it
-        // gets a heading and a source link with no documentation.
-        let entry = doc_lookup::lookup_entry("iperf3_bidir").unwrap();
-        assert!(entry.doc.is_none());
+        // A test case whose symbol is not in the generated source index has
+        // no source link or rustdoc to render.
+        assert!(doc_lookup::lookup_entry("unindexed_test").is_none());
         assert_eq!(
             blocks,
-            [
-                "# quick-test".to_string(),
-                "## iperf3_bidir".to_string(),
-                source_link(entry),
-            ]
+            ["# quick-test".to_string(), "## unindexed_test".to_string(),]
         );
     }
 
