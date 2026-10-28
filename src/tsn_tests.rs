@@ -1646,7 +1646,8 @@ fn profinet_rt(
     Ok(benchmark)
 }
 
-/// Run the Profinet real-time benchmark without changing the device's qdisc.
+/// Use RTC-Testbench to run a Profinet RT scenario without changing the
+/// device's qdisc.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_nop(
     config: &Config,
@@ -1669,8 +1670,8 @@ pub fn profinet_rt_nop(
     Ok(0)
 }
 
-/// Run the Profinet real-time benchmark with four-queue taprio scheduling
-/// and XDP enabled.
+/// Use RTC-Testbench to run a Profinet RT scenario with four-queue taprio
+/// scheduling and XDP enabled.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_taprio(
     config: &Config,
@@ -1693,8 +1694,8 @@ pub fn profinet_rt_4q_taprio(
     Ok(0)
 }
 
-/// Run the Profinet real-time benchmark with four-queue mqprio scheduling
-/// and XDP enabled.
+/// Use RTC-Testbench to run a Profinet RT scenario with four-queue mqprio
+/// scheduling and XDP enabled.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_mqprio_xdp(
     config: &Config,
@@ -1717,8 +1718,8 @@ pub fn profinet_rt_4q_mqprio_xdp(
     Ok(0)
 }
 
-/// Run the Profinet real-time benchmark with four-queue mqprio scheduling
-/// and XDP disabled, for comparison with the XDP-enabled case.
+/// Use RTC-Testbench to run a Profinet RT scenario with four-queue mqprio
+/// scheduling and XDP disabled, for comparison with the XDP-enabled case.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_mqprio_noxdp(
     config: &Config,
@@ -1741,8 +1742,8 @@ pub fn profinet_rt_4q_mqprio_noxdp(
     Ok(0)
 }
 
-/// Run the Profinet real-time benchmark with four-queue mqprio and CBS
-/// shaping.
+/// Use RTC-Testbench to run a Profinet RT scenario with four-queue mqprio
+/// scheduling and CBS shaping.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_cbs(
     config: &Config,
@@ -1765,8 +1766,9 @@ pub fn profinet_rt_4q_cbs(
     Ok(0)
 }
 
-/// Run the Profinet real-time benchmark with five-queue mqprio and CBS
-/// shaping, skipping the case if the adapter does not have five TX queues.
+/// Use RTC-Testbench to run a Profinet RT scenario with five-queue mqprio
+/// scheduling and CBS shaping, skipping the case if the adapter does
+/// not have five TX queues.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_5q_cbs(
     config: &Config,
@@ -1792,8 +1794,8 @@ pub fn profinet_rt_5q_cbs(
     Ok(0)
 }
 
-/// Run the Profinet real-time benchmark with four-queue mqprio and ETF,
-/// enabling XDP and transmit hardware timestamps.
+/// Use RTC-Testbench to run a Profinet RT scenario with four-queue mqprio and
+/// ETF, enabling XDP and transmit hardware timestamps.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_4q_etf(
     config: &Config,
@@ -1816,8 +1818,9 @@ pub fn profinet_rt_4q_etf(
     Ok(0)
 }
 
-/// Run the Profinet real-time benchmark with five-queue mqprio and TBS,
-/// skipping the case if the adapter lacks the required queues.
+/// Use RTC-Testbench to run a Profinet RT scenario with five-queue mqprio and
+/// TBS, enabling XDP and transmit hardware timestamps. Skips if the adapter
+/// lacks the required queues.
 /// This test does not have pass/fail guards, check the logs for KPI reporting.
 pub fn profinet_rt_5q_tbs(
     config: &Config,
